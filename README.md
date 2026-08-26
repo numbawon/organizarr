@@ -24,6 +24,16 @@ matter in one page, and gets out of the way for everything else.
 
 ## Quick start
 
+The image is published to two registries from the same build, so the tags
+are identical and you can use whichever you prefer:
+
+- `ghcr.io/numbawon/organizarr:latest`
+- `numbawon/organizarr:latest` (Docker Hub)
+
+Tags available on both: `latest`, a semver tag per release, and the short
+commit SHA of every build on `main`.
+
+
 ```yaml
 # docker-compose.yml
 services:
