@@ -10,6 +10,8 @@ Supports Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, and LazyLibrarian.
 Every app is optional — turn one on by setting its `_URL` env var, skip
 the rest.
 
+![Organizarr's status grid and Sonarr's settings expanded, live data from a real deployment](docs/screenshot.png)
+
 ## Why
 
 If you run more than one or two of these, you already know the
