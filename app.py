@@ -99,10 +99,15 @@ APPS: dict[str, dict[str, Any]] = _build_apps()
 # bazarr's own app/config.py). Curated to the fields that actually tend
 # to matter: its own login, and its Sonarr/Radarr connections -- both
 # easy to leave unconfigured without noticing.
+#
+# general.use_sonarr/use_radarr are the master on/off switches -- without
+# them the connection details below are stored but completely inert, which
+# is an easy way to "configure" Bazarr and have it silently do nothing.
 BAZARR_FIELDS = {
-    "auth":   ["type", "username", "password"],
-    "sonarr": ["ip", "port", "apikey", "base_url", "ssl"],
-    "radarr": ["ip", "port", "apikey", "base_url", "ssl"],
+    "general": ["use_sonarr", "use_radarr"],
+    "auth":    ["type", "username", "password"],
+    "sonarr":  ["ip", "port", "apikey", "base_url", "ssl"],
+    "radarr":  ["ip", "port", "apikey", "base_url", "ssl"],
 }
 BAZARR_SECRET_KEYS = {"password", "apikey"}
 
@@ -444,7 +449,13 @@ async def set_bazarr_settings(changes: dict[str, dict[str, Any]]):
         for key, value in fields.items():
             if key in BAZARR_SECRET_KEYS and value in (None, ""):
                 continue  # blank secret field on the wire == "unchanged"
-            form[f"settings-{section}-{key}"] = str(value)
+            if isinstance(value, bool):
+                # Bazarr's save_settings only converts the lowercase
+                # strings "true"/"false" back into booleans; Python's
+                # str(False) is "False", which fails its type validator.
+                form[f"settings-{section}-{key}"] = "true" if value else "false"
+            else:
+                form[f"settings-{section}-{key}"] = str(value)
     async with _client("bazarr") as c:
         r = await c.post("/api/system/settings", data=form)
         if r.status_code not in (200, 204):

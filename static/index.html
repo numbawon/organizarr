@@ -120,6 +120,10 @@
         <div id="bazarr-auth"></div>
       </fieldset>
       <fieldset>
+        <legend>Integrations (master switches)</legend>
+        <div id="bazarr-general"></div>
+      </fieldset>
+      <fieldset>
         <legend>Sonarr connection</legend>
         <div id="bazarr-sonarr"></div>
       </fieldset>
@@ -446,6 +450,14 @@ const BAZARR_SECTIONS = {
       {name:"type", label:"Authentication Type", type:"select", options:[["",  "None"],["basic","Basic"],["form","Form"]]},
       {name:"username", label:"Username", type:"text"},
       {name:"password", label:"Password", type:"password"},
+    ],
+  },
+  general: {
+    containerId: "bazarr-general",
+    // Without these the connection details below are stored but inert.
+    fields: [
+      {name:"use_sonarr", label:"Enable Sonarr integration", type:"checkbox"},
+      {name:"use_radarr", label:"Enable Radarr integration", type:"checkbox"},
     ],
   },
   sonarr: {
