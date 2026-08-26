@@ -86,7 +86,7 @@
 <body>
 <main>
   <h1>Organizarr
-    <small>Fields these apps expose over their own API — nothing more. Changes go through each app's real API, not its config file.</small>
+    <small>Fields these apps expose over their own API -- nothing more. Changes go through each app's real API, not its config file.</small>
   </h1>
 
   <div id="status" class="status-grid"></div>
@@ -249,7 +249,7 @@ async function renderApiKeyField(name, bodyEl) {
       const {source} = await api(`/api/${name}/apikey`);
       const label = source === "auto" ? "Auto-detected"
                   : source === "manual" ? "Using manual override"
-                  : "Not found — paste one below";
+                  : "Not found -- paste one below";
       msg(fs, label, source !== "none");
       clearBtn.style.display = source === "manual" ? "" : "none";
     } catch (e) { msg(fs, e.message, false); }
@@ -428,7 +428,7 @@ async function renderIndexers() {
         try {
           const body = { ...currentSchema, fields: collect() };
           await api("/api/prowlarr/indexers", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
-          msg(addForm, "Added — refresh to see it in the list.", true);
+          msg(addForm, "Added -- refresh to see it in the list.", true);
         } catch (e) { msg(addForm, e.message, false); }
       };
     };

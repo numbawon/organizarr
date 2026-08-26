@@ -1,5 +1,5 @@
 """
-Organizarr — a small config hub for the *arr apps. Not a clone of every
+Organizarr -- a small config hub for the *arr apps. Not a clone of every
 app's settings UI: it covers the fields that tend to be genuinely
 annoying to keep straight across apps by hand -- auth method,
 download-client host/port, Prowlarr's app/indexer sync -- via each

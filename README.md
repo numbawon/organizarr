@@ -3,11 +3,11 @@
 One place for the `*arr` settings that are actually annoying to keep
 consistent by hand: authentication method, download-client host/port,
 and Prowlarr's application/indexer sync. Not a clone of every app's
-full settings UI — just the fields worth centralizing, edited through
+full settings UI -- just the fields worth centralizing, edited through
 each app's own real API, never by touching a config file directly.
 
 Supports Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, and LazyLibrarian.
-Every app is optional — turn one on by setting its `_URL` env var, skip
+Every app is optional -- turn one on by setting its `_URL` env var, skip
 the rest.
 
 ![Organizarr's status grid and Sonarr's settings expanded, live data from a real deployment](docs/screenshot.png)
@@ -15,9 +15,9 @@ the rest.
 ## Why
 
 If you run more than one or two of these, you already know the
-annoyance: the same handful of settings — is Forms auth still on after
+annoyance: the same handful of settings -- is Forms auth still on after
 a redeploy, does this app's download client actually point at the
-right host, does Prowlarr actually know about every app — live in five
+right host, does Prowlarr actually know about every app -- live in five
 different UIs with five different login screens (well, ideally one:
 see [Security](#security) below). Organizarr puts the fields that
 matter in one page, and gets out of the way for everything else.
@@ -54,7 +54,7 @@ networks:
     external: true
 ```
 
-Any app you don't set a `_URL` for just doesn't show up — no error, no
+Any app you don't set a `_URL` for just doesn't show up -- no error, no
 placeholder, it's as if it doesn't exist in this deployment.
 
 ## Environment variables
@@ -71,12 +71,12 @@ Every app follows the same two-variable pattern:
 
 If `<NAME>_CONFIG_PATH` isn't set (or the file isn't readable, or the
 app hasn't finished its own first boot yet), that app's page shows a
-manual API key field instead — paste the key there and it works the
+manual API key field instead -- paste the key there and it works the
 same way. Auto-detection is retried on every request, not just once at
 startup, and always takes back over automatically the moment it
-succeeds — the manual entry is a fallback, not a permanent override.
+succeeds -- the manual entry is a fallback, not a permanent override.
 
-`STATE_PATH` (default `/state`) — where manually-entered API key
+`STATE_PATH` (default `/state`) -- where manually-entered API key
 overrides are persisted. Mount a volume here if you want overrides to
 survive a restart (recommended).
 
@@ -92,7 +92,7 @@ survive a restart (recommended).
 
 Organizarr has **no login of its own**. It expects to sit behind a
 reverse-proxy auth gate (Authentik forward-auth, Authelia, an
-`nginx`/Traefik basic-auth middleware, whatever you already use) —
+`nginx`/Traefik basic-auth middleware, whatever you already use) --
 anyone who can reach it can view and change every configured app's
 authentication settings and download-client credentials. Don't expose
 it directly to the internet, and if you're running it alongside other
@@ -113,9 +113,9 @@ docker run --rm -p 8000:8000 \
   organizarr:local
 ```
 
-No build step beyond the Dockerfile — the frontend is a single static
+No build step beyond the Dockerfile -- the frontend is a single static
 HTML/JS file, no bundler.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT -- see [LICENSE](LICENSE).
