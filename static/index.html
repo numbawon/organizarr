@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Organizarr</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#0a0a12; --card:#12121e; --card2:#161628; --border:#2c2c42;
+    --ink:#e6f7ff; --soft:#8a8ab0;
+    --cyan:#00ffff; --magenta:#ff00ff;
+    --warn:#ff6b6b; --ok:#5cd68a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.5 system-ui,sans-serif; padding:24px;
+    position: relative; overflow-x: hidden;
+  }
+  /* Scrolling scanline distortion -- fixed behind everything, faint. */
+  body::before {
+    content:""; position: fixed; inset: -50% -10% -10% -10%; pointer-events:none; z-index:0;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,255,255,0.05) 0px, rgba(0,255,255,0.05) 1px, transparent 1px, transparent 3px),
+      radial-gradient(ellipse at 50% 0%, rgba(255,0,255,0.06), transparent 60%);
+    animation: scan 9s linear infinite;
+  }
+  @keyframes scan { from { transform: translateY(0); } to { transform: translateY(60px); } }
+  main { max-width: 920px; margin: 0 auto; display:flex; flex-direction:column; gap:16px; position:relative; z-index:1; }
+
+  h1 { font-size:22px; margin:0 0 4px; color:var(--cyan); letter-spacing:.03em; animation: flicker 5s infinite; }
+  h1 small { color:var(--soft); font-weight:400; font-size:13px; display:block; margin-top:4px; text-shadow:none; animation:none; }
+  @keyframes flicker {
+    0%, 3%, 6%, 100% { text-shadow: 0 0 4px var(--cyan), 0 0 12px var(--cyan), 0 0 24px rgba(0,255,255,.6); opacity:1; }
+    4% { text-shadow: none; opacity:.7; }
+    7% { text-shadow: 0 0 2px var(--cyan); opacity:.85; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    body::before { animation: none; }
+    h1 { animation: none; text-shadow: 0 0 6px var(--cyan); }
+  }
+
+  .status-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; }
+  @media (max-width: 640px) { .status-grid { grid-template-columns:repeat(2,1fr); } }
+  @media (min-width:641px) and (max-width: 880px) { .status-grid { grid-template-columns:repeat(3,1fr); } }
+  .status-card { background:var(--card); border:1px solid var(--border); border-radius:6px; padding:10px 12px; }
+  .status-card .name { font-weight:600; text-transform:capitalize; }
+  .status-card .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; box-shadow: 0 0 6px currentColor; }
+  .dot.ok { background:var(--ok); color:var(--ok); } .dot.bad { background:var(--warn); color:var(--warn); }
+  .status-card .meta { font-size:12px; color:var(--soft); margin-top:4px; }
+
+  details { background:var(--card); border:1px solid var(--border); border-radius:6px; box-shadow: 0 0 10px rgba(0,255,255,.06); }
+  summary { cursor:pointer; padding:12px 16px; font-weight:600; text-transform:capitalize; list-style:none; display:flex; justify-content:space-between; color:var(--ink); }
+  summary::-webkit-details-marker { display:none; }
+  summary::after { content:"▸"; color:var(--magenta); transition: transform .15s; text-shadow: 0 0 6px var(--magenta); }
+  details[open] summary::after { transform: rotate(90deg); }
+  details[open] > summary { border-bottom: 1px solid var(--border); color:var(--cyan); }
+  .body { padding: 4px 16px 16px; }
+  fieldset { border:1px solid var(--border); border-radius:6px; margin:12px 0; padding:10px 14px; background:var(--card2); }
+  legend { color:var(--magenta); font-size:12px; text-transform:uppercase; letter-spacing:.08em; padding:0 6px; }
+  label { display:block; font-size:12px; color:var(--soft); margin-top:8px; }
+  input, select {
+    width:100%; background:#0a0a14; color:var(--ink); border:1px solid var(--border);
+    border-radius:4px; padding:6px 8px; margin-top:2px; font-size:14px;
+  }
+  input:focus, select:focus { outline:none; border-color:var(--cyan); box-shadow: 0 0 6px rgba(0,255,255,.4); }
+  input[type=checkbox] { width:auto; }
+  button {
+    background:var(--magenta); color:#0a0a12; border:none; border-radius:4px;
+    padding:7px 14px; font-weight:600; cursor:pointer; margin-top:10px;
+    box-shadow: 0 0 8px rgba(255,0,255,.5); transition: box-shadow .15s, opacity .15s;
+  }
+  button:hover { opacity:.9; box-shadow: 0 0 16px rgba(255,0,255,.8); }
+  button:focus-visible { outline: 2px solid var(--cyan); outline-offset:2px; }
+  button.secondary { background:transparent; color:var(--cyan); border:1px solid var(--cyan); box-shadow: 0 0 8px rgba(0,255,255,.3); }
+  .msg { font-size:13px; margin-top:8px; }
+  .msg.ok { color:var(--ok); } .msg.err { color:var(--warn); }
+  table { width:100%; border-collapse:collapse; margin-top:8px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); font-size:13px; }
+  th { color:var(--soft); font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.05em; }
+  .add-row { margin-top:14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Organizarr
+    <small>Fields these apps expose over their own API — nothing more. Changes go through each app's real API, not its config file.</small>
+  </h1>
+
+  <div id="status" class="status-grid"></div>
+
+  <div id="servarr-apps"></div>
+
+  <details id="prowlarr-section">
+    <summary>Prowlarr</summary>
+    <div class="body">
+      <fieldset>
+        <legend>Applications (sync targets)</legend>
+        <div id="prowlarr-apps"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Indexers</legend>
+        <table id="indexer-table"><thead><tr><th>Name</th><th>Protocol</th><th>Enabled</th></tr></thead><tbody></tbody></table>
+        <div class="add-row">
+          <label for="indexer-picker">Add indexer</label>
+          <select id="indexer-picker"><option value="">Pick one…</option></select>
+          <div id="indexer-add-form"></div>
+        </div>
+      </fieldset>
+    </div>
+  </details>
+
+  <details id="bazarr-section">
+    <summary>Bazarr</summary>
+    <div class="body">
+      <fieldset>
+        <legend>Login</legend>
+        <div id="bazarr-auth"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Sonarr connection</legend>
+        <div id="bazarr-sonarr"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Radarr connection</legend>
+        <div id="bazarr-radarr"></div>
+      </fieldset>
+    </div>
+  </details>
+
+  <details id="lazylibrarian-section">
+    <summary>LazyLibrarian</summary>
+    <div class="body">
+      <fieldset>
+        <legend>Login</legend>
+        <div id="ll-general"></div>
+      </fieldset>
+      <fieldset>
+        <legend>qBittorrent connection</legend>
+        <div id="ll-qbittorrent"></div>
+      </fieldset>
+    </div>
+  </details>
+</main>
+
+<script>
+const $ = (sel, el=document) => el.querySelector(sel);
+const el = (tag, props={}, ...children) => {
+  const n = document.createElement(tag);
+  Object.entries(props).forEach(([k,v]) => k === "text" ? n.textContent = v : n.setAttribute(k, v));
+  children.forEach(c => n.appendChild(c));
+  return n;
+};
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json().catch(()=>({detail:r.statusText}))).detail || r.statusText);
+  return r.status === 204 ? null : r.json();
+}
+
+// ---- generic Servarr "fields" schema renderer -----------------------
+// Renders one form for a {fields:[{name,label,type,value,privacy,
+// selectOptions}]} object; returns a collect() reading current values
+// back into the same shape, ready to send back as the update body.
+function renderFields(fields, container) {
+  const inputs = {};
+  fields.forEach(f => {
+    if (f.advanced) return; // keep the UI to what's actually needed day-to-day
+    const wrap = el("div");
+    wrap.appendChild(el("label", {text: f.label || f.name}));
+    let input;
+    if (f.type === "select" && f.selectOptions) {
+      input = el("select");
+      f.selectOptions.forEach(o => {
+        const opt = el("option", {value: o.value, text: o.name});
+        if (o.value === f.value) opt.selected = true;
+        input.appendChild(opt);
+      });
+    } else if (f.type === "checkbox") {
+      input = el("input", {type: "checkbox"});
+      input.checked = !!f.value;
+    } else if (f.privacy === "password" || f.privacy === "apiKey") {
+      input = el("input", {type: "password", placeholder: "unchanged"});
+    } else {
+      input = el("input", {type: "text"});
+      if (f.value !== undefined && f.value !== null) input.value = f.value;
+    }
+    wrap.appendChild(input);
+    container.appendChild(wrap);
+    inputs[f.name] = {input, type: f.type, privacy: f.privacy};
+  });
+  return () => Object.entries(inputs).map(([name, {input, type}]) => ({
+    name,
+    value: type === "checkbox" ? input.checked
+         : type === "select" ? (isNaN(input.value) ? input.value : Number(input.value))
+         : input.value,
+  }));
+}
+
+function msg(container, text, ok) {
+  const old = container.querySelector(".msg");
+  if (old) old.remove();
+  container.appendChild(el("div", {class: `msg ${ok ? "ok" : "err"}`, text}));
+}
+
+// ---- status strip -----------------------------------------------------
+// Takes the already-fetched app list (see init() at the bottom) rather
+// than fetching its own copy -- every app section is driven from this
+// one call, since which apps even exist is entirely env-var-defined.
+function renderStatusGrid(apps) {
+  const grid = $("#status");
+  grid.innerHTML = "";
+  if (!apps.length) {
+    grid.appendChild(el("div", {class:"msg", text:"No apps configured -- set at least one <NAME>_URL env var."}));
+    return;
+  }
+  apps.forEach(a => {
+    const card = el("div", {class: "status-card"});
+    card.appendChild(el("div", {class: "name"}, el("span", {class: `dot ${a.reachable ? "ok" : "bad"}`}), document.createTextNode(a.name)));
+    card.appendChild(el("div", {class: "meta", text: a.reachable ? (a.version || "reachable") : (a.error || "unreachable")}));
+    grid.appendChild(card);
+  });
+}
+
+function hideSection(id) {
+  const section = document.getElementById(id);
+  if (section) section.style.display = "none";
+}
+
+// ---- API key: auto-detect status + manual override fallback ------------
+// Shared by every app's section -- always inserted first, ahead of
+// whatever fieldsets that app's own loader adds.
+async function renderApiKeyField(name, bodyEl) {
+  const fs = el("fieldset");
+  fs.appendChild(el("legend", {text: "API Key"}));
+  fs.appendChild(el("label", {text: "Manual override (only used if auto-detection can't find one)"}));
+  const input = el("input", {type: "password", placeholder: "paste API key"});
+  fs.appendChild(input);
+  const saveBtn = el("button", {class: "secondary", text: "Save"});
+  const clearBtn = el("button", {class: "secondary", text: "Clear override"});
+  clearBtn.style.marginLeft = "8px";
+  fs.appendChild(saveBtn);
+  fs.appendChild(clearBtn);
+
+  async function refresh() {
+    try {
+      const {source} = await api(`/api/${name}/apikey`);
+      const label = source === "auto" ? "Auto-detected"
+                  : source === "manual" ? "Using manual override"
+                  : "Not found — paste one below";
+      msg(fs, label, source !== "none");
+      clearBtn.style.display = source === "manual" ? "" : "none";
+    } catch (e) { msg(fs, e.message, false); }
+  }
+  saveBtn.onclick = async () => {
+    if (!input.value) return;
+    try {
+      await api(`/api/${name}/apikey`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({value: input.value})});
+      input.value = "";
+      await refresh();
+    } catch (e) { msg(fs, e.message, false); }
+  };
+  clearBtn.onclick = async () => {
+    try {
+      await api(`/api/${name}/apikey`, {method:"DELETE"});
+      await refresh();
+    } catch (e) { msg(fs, e.message, false); }
+  };
+
+  bodyEl.insertBefore(fs, bodyEl.firstChild);
+  await refresh();
+}
+
+// ---- per-app host settings + download clients --------------------------
+const AUTH_METHOD_OPTIONS = [["forms","Forms (Login Page)"],["basic","Basic"],["none","None"]];
+const AUTH_REQUIRED_OPTIONS = [["enabled","Enabled"],["disabledForLocalAddresses","Disabled for Local Addresses"]];
+
+async function loadServarrApps(names) {
+  const wrap = $("#servarr-apps");
+  for (const name of names) {
+    const details = el("details");
+    details.appendChild(el("summary", {text: name}));
+    const body = el("div", {class: "body"});
+    details.appendChild(body);
+    wrap.appendChild(details);
+
+    details.addEventListener("toggle", async function once() {
+      if (!details.open) return;
+      details.removeEventListener("toggle", once);
+      await renderApiKeyField(name, body);
+      await renderHostForm(name, body);
+      await renderDownloadClients(name, body);
+    }, { once: false });
+  }
+}
+
+async function renderHostForm(name, body) {
+  const fs = el("fieldset");
+  fs.appendChild(el("legend", {text: "Security"}));
+  const form = el("div");
+  fs.appendChild(form);
+  body.appendChild(fs);
+  try {
+    const host = await api(`/api/${name}/host`);
+    const methodSel = el("select");
+    AUTH_METHOD_OPTIONS.forEach(([v,l]) => {
+      const o = el("option", {value:v, text:l});
+      if (v === host.authenticationMethod) o.selected = true;
+      methodSel.appendChild(o);
+    });
+    const reqSel = el("select");
+    AUTH_REQUIRED_OPTIONS.forEach(([v,l]) => {
+      const o = el("option", {value:v, text:l});
+      if (v === host.authenticationRequired) o.selected = true;
+      reqSel.appendChild(o);
+    });
+    form.appendChild(el("label", {text:"Authentication Method"}));
+    form.appendChild(methodSel);
+    form.appendChild(el("label", {text:"Authentication Required"}));
+    form.appendChild(reqSel);
+    const btn = el("button", {text:"Save"});
+    form.appendChild(btn);
+    btn.onclick = async () => {
+      try {
+        await api(`/api/${name}/host`, {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({authenticationMethod: methodSel.value, authenticationRequired: reqSel.value})});
+        msg(form, "Saved.", true);
+      } catch (e) { msg(form, e.message, false); }
+    };
+  } catch (e) { form.appendChild(el("div", {class:"msg err", text: e.message})); }
+}
+
+async function renderDownloadClients(name, body) {
+  const fs = el("fieldset");
+  fs.appendChild(el("legend", {text: "Download Clients"}));
+  body.appendChild(fs);
+  try {
+    const clients = await api(`/api/${name}/downloadclients`);
+    if (!clients.length) { fs.appendChild(el("div", {class:"msg", text:"None configured."})); return; }
+    clients.forEach(client => {
+      const box = el("div");
+      box.appendChild(el("label", {text: client.name}));
+      const formDiv = el("div");
+      box.appendChild(formDiv);
+      const collect = renderFields(client.fields, formDiv);
+      const btn = el("button", {class:"secondary", text:"Save"});
+      box.appendChild(btn);
+      btn.onclick = async () => {
+        try {
+          await api(`/api/${name}/downloadclients/${client.id}`, {method:"PUT", headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({fields: collect()})});
+          msg(box, "Saved.", true);
+        } catch (e) { msg(box, e.message, false); }
+      };
+      fs.appendChild(box);
+    });
+  } catch (e) { fs.appendChild(el("div", {class:"msg err", text: e.message})); }
+}
+
+// ---- Prowlarr: applications + indexers ---------------------------------
+async function loadProwlarr() {
+  const section = $("#prowlarr-section");
+  section.addEventListener("toggle", async function once() {
+    if (!section.open) return;
+    section.removeEventListener("toggle", once);
+    await renderApiKeyField("prowlarr", $("#prowlarr-section .body"));
+    await renderApplications();
+    await renderIndexers();
+  });
+}
+
+async function renderApplications() {
+  const wrap = $("#prowlarr-apps");
+  try {
+    const apps = await api("/api/prowlarr/applications");
+    apps.forEach(a => {
+      const box = el("div");
+      box.appendChild(el("label", {text: a.name}));
+      const formDiv = el("div");
+      box.appendChild(formDiv);
+      const collect = renderFields(a.fields, formDiv);
+      const btn = el("button", {class:"secondary", text:"Save"});
+      box.appendChild(btn);
+      btn.onclick = async () => {
+        try {
+          a.fields = a.fields.map(f => {
+            const updated = collect().find(u => u.name === f.name);
+            if (updated && !(f.privacy && updated.value === "")) f.value = updated.value;
+            return f;
+          });
+          await api(`/api/prowlarr/applications/${a.id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(a)});
+          msg(box, "Saved.", true);
+        } catch (e) { msg(box, e.message, false); }
+      };
+      wrap.appendChild(box);
+    });
+  } catch (e) { wrap.appendChild(el("div", {class:"msg err", text: e.message})); }
+}
+
+async function renderIndexers() {
+  const tbody = $("#indexer-table tbody");
+  const picker = $("#indexer-picker");
+  const addForm = $("#indexer-add-form");
+  try {
+    const indexers = await api("/api/prowlarr/indexers");
+    indexers.forEach(ix => {
+      tbody.appendChild(el("tr", {},
+        el("td", {text: ix.name}), el("td", {text: ix.protocol}), el("td", {text: ix.enable ? "yes" : "no"})));
+    });
+  } catch (e) { tbody.appendChild(el("tr", {}, el("td", {colspan:"3", class:"msg err", text: e.message}))); }
+
+  try {
+    const schema = await api("/api/prowlarr/indexers/schema");
+    schema.forEach((s, i) => picker.appendChild(el("option", {value: i, text: s.name})));
+    let currentSchema = null;
+    picker.onchange = () => {
+      addForm.innerHTML = "";
+      if (picker.value === "") return;
+      currentSchema = schema[Number(picker.value)];
+      const formDiv = el("div");
+      addForm.appendChild(formDiv);
+      const collect = renderFields(currentSchema.fields, formDiv);
+      const btn = el("button", {text:"Add indexer"});
+      addForm.appendChild(btn);
+      btn.onclick = async () => {
+        try {
+          const body = { ...currentSchema, fields: collect() };
+          await api("/api/prowlarr/indexers", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+          msg(addForm, "Added — refresh to see it in the list.", true);
+        } catch (e) { msg(addForm, e.message, false); }
+      };
+    };
+  } catch (e) { addForm.appendChild(el("div", {class:"msg err", text: e.message})); }
+}
+
+// ---- Bazarr: its own login + Sonarr/Radarr connections -----------------
+// Bazarr has no self-describing schema like the servarr/Prowlarr family --
+// just a flat {section: {key: value}} object -- so the field metadata
+// (label/type) is hand-declared here, mirroring BAZARR_FIELDS in app.py.
+const BAZARR_SECTIONS = {
+  auth: {
+    containerId: "bazarr-auth",
+    fields: [
+      {name:"type", label:"Authentication Type", type:"select", options:[["",  "None"],["basic","Basic"],["form","Form"]]},
+      {name:"username", label:"Username", type:"text"},
+      {name:"password", label:"Password", type:"password"},
+    ],
+  },
+  sonarr: {
+    containerId: "bazarr-sonarr",
+    fields: [
+      {name:"ip", label:"Host", type:"text"},
+      {name:"port", label:"Port", type:"text"},
+      {name:"base_url", label:"Base URL", type:"text"},
+      {name:"apikey", label:"API Key", type:"password"},
+      {name:"ssl", label:"Use SSL", type:"checkbox"},
+    ],
+  },
+  radarr: {
+    containerId: "bazarr-radarr",
+    fields: [
+      {name:"ip", label:"Host", type:"text"},
+      {name:"port", label:"Port", type:"text"},
+      {name:"base_url", label:"Base URL", type:"text"},
+      {name:"apikey", label:"API Key", type:"password"},
+      {name:"ssl", label:"Use SSL", type:"checkbox"},
+    ],
+  },
+};
+
+// LazyLibrarian's shape is identical -- {section: {field: value}}, saved
+// back as {section: {...values}} -- just a different backend and no
+// self-describing schema either, so it shares this loader with Bazarr.
+const LAZYLIBRARIAN_SECTIONS = {
+  General: {
+    containerId: "ll-general",
+    // "" and "FORM" are the only two values confirmed by direct
+    // observation of a live instance, not a guessed full enum.
+    fields: [
+      {name:"auth_type", label:"Authentication Type", type:"select", options:[["","None"],["FORM","Form Login"]]},
+    ],
+  },
+  QBITTORRENT: {
+    containerId: "ll-qbittorrent",
+    fields: [
+      {name:"qbittorrent_host", label:"Host", type:"text"},
+      {name:"qbittorrent_port", label:"Port", type:"text"},
+    ],
+  },
+};
+
+// Generic loader for the "flat {section: {field: value}}, save whole
+// section back" shape shared by Bazarr and LazyLibrarian -- neither
+// self-describes its fields like the servarr/Prowlarr family, so the
+// field metadata (label/type) is hand-declared per app above instead.
+function loadKeyValueApp(appName, detailsSelector, apiPath, sections, errorFallbackId) {
+  const section = $(detailsSelector);
+  section.addEventListener("toggle", async function once() {
+    if (!section.open) return;
+    section.removeEventListener("toggle", once);
+    await renderApiKeyField(appName, $(`${detailsSelector} .body`));
+    try {
+      const current = await api(apiPath);
+      for (const [sectionName, meta] of Object.entries(sections)) {
+        const container = $(`#${meta.containerId}`);
+        const inputs = {};
+        meta.fields.forEach(f => {
+          const wrap = el("div");
+          wrap.appendChild(el("label", {text: f.label}));
+          let input;
+          const value = (current[sectionName] || {})[f.name];
+          if (f.type === "select") {
+            input = el("select");
+            f.options.forEach(([v,l]) => {
+              const o = el("option", {value:v, text:l});
+              if (v === value) o.selected = true;
+              input.appendChild(o);
+            });
+          } else if (f.type === "checkbox") {
+            input = el("input", {type:"checkbox"});
+            input.checked = !!value;
+          } else if (f.type === "password") {
+            input = el("input", {type:"password", placeholder:"unchanged"});
+          } else {
+            input = el("input", {type:"text"});
+            if (value !== undefined && value !== null) input.value = value;
+          }
+          wrap.appendChild(input);
+          container.appendChild(wrap);
+          inputs[f.name] = {input, type: f.type};
+        });
+        const btn = el("button", {class:"secondary", text:"Save"});
+        container.appendChild(btn);
+        btn.onclick = async () => {
+          const payload = {};
+          Object.entries(inputs).forEach(([name, {input, type}]) => {
+            payload[name] = type === "checkbox" ? input.checked : input.value;
+          });
+          try {
+            await api(apiPath, {method:"POST", headers:{"Content-Type":"application/json"},
+              body: JSON.stringify({[sectionName]: payload})});
+            msg(container, "Saved.", true);
+          } catch (e) { msg(container, e.message, false); }
+        };
+      }
+    } catch (e) {
+      $(`#${errorFallbackId}`).appendChild(el("div", {class:"msg err", text: e.message}));
+    }
+  });
+}
+
+function loadBazarr() {
+  loadKeyValueApp("bazarr", "#bazarr-section", "/api/bazarr/settings", BAZARR_SECTIONS, "bazarr-auth");
+}
+
+function loadLazyLibrarian() {
+  loadKeyValueApp("lazylibrarian", "#lazylibrarian-section", "/api/lazylibrarian/settings", LAZYLIBRARIAN_SECTIONS, "ll-general");
+}
+
+async function init() {
+  const apps = await api("/api/status");
+  renderStatusGrid(apps);
+
+  const byKind = {};
+  apps.forEach(a => { (byKind[a.kind] ||= []).push(a.name); });
+
+  await loadServarrApps(byKind.servarr || []);
+
+  if (byKind.prowlarr?.length) loadProwlarr(); else hideSection("prowlarr-section");
+  if (byKind.bazarr?.length) loadBazarr(); else hideSection("bazarr-section");
+  if (byKind.lazylibrarian?.length) loadLazyLibrarian(); else hideSection("lazylibrarian-section");
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+# Minimal standalone example. Adjust URLs/networks/volumes to match
+# your own stack -- see README for the full environment variable
+# reference and every app's config-file format.
+services:
+  organizarr:
+    image: ghcr.io/numbawon/organizarr:latest
+    ports:
+      - "8000:8000"
+    environment:
+      SONARR_URL: http://sonarr:8989
+      SONARR_CONFIG_PATH: /data/sonarr/config.xml
+      RADARR_URL: http://radarr:7878
+      RADARR_CONFIG_PATH: /data/radarr/config.xml
+      PROWLARR_URL: http://prowlarr:9696
+      PROWLARR_CONFIG_PATH: /data/prowlarr/config.xml
+    volumes:
+      - sonarr_config:/data/sonarr:ro
+      - radarr_config:/data/radarr:ro
+      - prowlarr_config:/data/prowlarr:ro
+      - organizarr_data:/state
+    networks:
+      - your_stack_network
+    restart: unless-stopped
+
+volumes:
+  organizarr_data:
+  # These three should already exist as your *arr apps' real config
+  # volumes -- referenced here read-only, not created by this file.
+  sonarr_config:
+    external: true
+  radarr_config:
+    external: true
+  prowlarr_config:
+    external: true
+
+networks:
+  your_stack_network:
+    external: true
