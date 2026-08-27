@@ -71,6 +71,11 @@ _APP_SPECS = [
     ("prowlarr", "prowlarr", "v1"),
     ("bazarr", "bazarr", None),
     ("lazylibrarian", "lazylibrarian", None),
+    # Not a settings-provider app: Cleanuparr has its own API but no
+    # shared *arr settings shape, so it is tracked for reachability only.
+    # It belongs here because it acts on the same download clients and
+    # *arr queues, so "is it actually up" is worth seeing in one place.
+    ("cleanuparr", "cleanuparr", None),
 ]
 
 
@@ -273,12 +278,66 @@ async def clear_apikey_override(app_name: str):
 # ---------------------------------------------------------------------
 @app.get("/api/status")
 async def status():
+    """Per-app health, with enough detail for the UI to hide what is not
+    actually usable.
+
+    `detected` is the field the UI filters on. An app is detected when it
+    answered AND (for the kinds that need one) a working API key was
+    found. Anything else is configured-but-not-working: the URL env var
+    is set, so someone intended it to exist, but the config volume is not
+    mounted, the app has not finished its first boot, or it is down.
+
+    Showing those by default made the page misleading -- a section full
+    of controls that 503 on every click looks broken rather than absent.
+    They are hidden instead, behind a toggle, with the reason attached.
+    """
     out = []
     for name, cfg in APPS.items():
-        entry = {"name": name, "kind": cfg["kind"], "reachable": False, "version": None, "error": None}
+        config_path = cfg.get("config")
+        entry = {
+            "name": name,
+            "kind": cfg["kind"],
+            "reachable": False,
+            "version": None,
+            "error": None,
+            "detected": False,
+            # Why an app might not be usable, so the UI can say something
+            # more useful than "unreachable".
+            "config_path": config_path,
+            "config_mounted": bool(config_path and Path(config_path).exists()),
+            "api_key": False,
+            "api_key_source": None,
+        }
+
+        # cleanuparr is reachability-only: it has no shared settings API
+        # and needs no key to answer its health endpoint.
+        if cfg["kind"] == "cleanuparr":
+            try:
+                async with httpx.AsyncClient(base_url=cfg["base"], timeout=10) as c:
+                    r = await c.get("/health", follow_redirects=True)
+                    r.raise_for_status()
+                    entry["reachable"] = True
+                    entry["detected"] = True
+            except Exception as e:  # noqa: BLE001
+                entry["error"] = str(e)
+            out.append(entry)
+            continue
+
         key = _get_api_key(name)
+        if key:
+            entry["api_key"] = True
+            # Auto-detection wins over an override (see _get_api_key), so
+            # if the config file yields a key that is the live source.
+            entry["api_key_source"] = (
+                "config" if _read_api_key(config_path) else "override"
+            )
         if not key:
-            entry["error"] = "no API key found yet (has it finished its own first boot?)"
+            if config_path and not entry["config_mounted"]:
+                entry["error"] = f"config file not found at {config_path} (volume not mounted?)"
+            elif config_path:
+                entry["error"] = "config file mounted but has no API key yet (still on first boot?)"
+            else:
+                entry["error"] = "no CONFIG_PATH set and no manual API key override"
             out.append(entry)
             continue
         try:
@@ -311,6 +370,8 @@ async def status():
                     entry["reachable"] = True
         except Exception as e:  # noqa: BLE001 -- surfacing to the UI is the point
             entry["error"] = str(e)
+        # Usable means it answered AND we hold a key we can act with.
+        entry["detected"] = bool(entry["reachable"] and entry["api_key"])
         out.append(entry)
     return out
 

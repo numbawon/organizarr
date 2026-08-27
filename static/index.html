@@ -50,6 +50,14 @@
   .status-card .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; box-shadow: 0 0 6px currentColor; }
   .dot.ok { background:var(--ok); color:var(--ok); } .dot.bad { background:var(--warn); color:var(--warn); }
   .status-card .meta { font-size:12px; color:var(--soft); margin-top:4px; }
+  /* Undetected apps read as deliberately-dimmed rather than broken. */
+  .status-card.undetected { opacity:0.55; border-style:dashed; }
+  .dot.unknown { background:var(--soft); color:var(--soft); }
+  .status-bar { display:flex; align-items:center; justify-content:space-between;
+                gap:12px; margin:0 0 10px; flex-wrap:wrap; }
+  .status-bar .hint { font-size:12px; color:var(--soft); }
+  .status-bar label { font-size:12px; color:var(--soft); display:flex;
+                      align-items:center; gap:6px; cursor:pointer; }
 
   details { background:var(--card); border:1px solid var(--border); border-radius:6px; box-shadow: 0 0 10px rgba(0,255,255,.06); }
   summary { cursor:pointer; padding:12px 16px; font-weight:600; text-transform:capitalize; list-style:none; display:flex; justify-content:space-between; color:var(--ink); }
@@ -88,6 +96,11 @@
   <h1>Organizarr
     <small>Fields these apps expose over their own API -- nothing more. Changes go through each app's real API, not its config file.</small>
   </h1>
+
+  <div class="status-bar">
+    <span class="hint" id="status-hint"></span>
+    <label><input type="checkbox" id="show-undetected"> Show undetected services</label>
+  </div>
 
   <div id="status" class="status-grid"></div>
 
@@ -213,17 +226,55 @@ function msg(container, text, ok) {
 // Takes the already-fetched app list (see init() at the bottom) rather
 // than fetching its own copy -- every app section is driven from this
 // one call, since which apps even exist is entirely env-var-defined.
+// Whether to show apps that are configured but not actually usable.
+// Persisted per-browser; a plain preference, so a storage failure (private
+// window, blocked site data) must not break the page.
+function showUndetected() {
+  try { return localStorage.getItem("organizarr.showUndetected") === "1"; }
+  catch (e) { return false; }
+}
+function setShowUndetected(v) {
+  try { localStorage.setItem("organizarr.showUndetected", v ? "1" : "0"); }
+  catch (e) { /* preference just does not persist; not worth surfacing */ }
+}
+
 function renderStatusGrid(apps) {
   const grid = $("#status");
+  const hint = $("#status-hint");
   grid.innerHTML = "";
   if (!apps.length) {
+    hint.textContent = "";
     grid.appendChild(el("div", {class:"msg", text:"No apps configured -- set at least one <NAME>_URL env var."}));
     return;
   }
-  apps.forEach(a => {
-    const card = el("div", {class: "status-card"});
-    card.appendChild(el("div", {class: "name"}, el("span", {class: `dot ${a.reachable ? "ok" : "bad"}`}), document.createTextNode(a.name)));
-    card.appendChild(el("div", {class: "meta", text: a.reachable ? (a.version || "reachable") : (a.error || "unreachable")}));
+
+  const show = showUndetected();
+  const hidden = apps.filter(a => !a.detected);
+  const visible = show ? apps : apps.filter(a => a.detected);
+
+  // Say how many are hidden and why, or the toggle is a mystery control.
+  if (hidden.length === 0) {
+    hint.textContent = `${apps.length} service${apps.length === 1 ? "" : "s"} detected.`;
+  } else if (show) {
+    hint.textContent = `${hidden.length} of ${apps.length} not detected (shown, dimmed).`;
+  } else {
+    hint.textContent = `${hidden.length} of ${apps.length} not detected and hidden.`;
+  }
+
+  if (!visible.length) {
+    grid.appendChild(el("div", {class:"msg", text:"Nothing detected yet. Tick \u201cShow undetected services\u201d to see what is configured but not responding."}));
+    return;
+  }
+
+  visible.forEach(a => {
+    const card = el("div", {class: `status-card${a.detected ? "" : " undetected"}`});
+    const dot = a.detected ? "ok" : (a.reachable ? "unknown" : "bad");
+    card.appendChild(el("div", {class: "name"},
+      el("span", {class: `dot ${dot}`}), document.createTextNode(a.name)));
+    // For a detected app the version is the useful line; for anything
+    // else the reason it is not usable is.
+    card.appendChild(el("div", {class: "meta",
+      text: a.detected ? (a.version || "reachable") : (a.error || "unreachable")}));
     grid.appendChild(card);
   });
 }
@@ -573,10 +624,26 @@ function loadLazyLibrarian() {
 
 async function init() {
   const apps = await api("/api/status");
+
+  const toggle = $("#show-undetected");
+  toggle.checked = showUndetected();
+  // Re-render on change. A full reload is the honest move here: the
+  // per-app sections below fetch live settings on load, and rebuilding
+  // them in place would mean unsaved edits vanishing silently.
+  toggle.addEventListener("change", () => {
+    setShowUndetected(toggle.checked);
+    location.reload();
+  });
+
   renderStatusGrid(apps);
 
+  // Sections are built only for apps that are actually usable. An
+  // undetected app's section would be a wall of controls that 503 on
+  // every click, which reads as "Organizarr is broken" rather than "that
+  // app is not up".
+  const usable = showUndetected() ? apps : apps.filter(a => a.detected);
   const byKind = {};
-  apps.forEach(a => { (byKind[a.kind] ||= []).push(a.name); });
+  usable.forEach(a => { (byKind[a.kind] ||= []).push(a.name); });
 
   await loadServarrApps(byKind.servarr || []);
 
