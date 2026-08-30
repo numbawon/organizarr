@@ -40,6 +40,10 @@
   @media (prefers-reduced-motion: reduce) {
     body::before { animation: none; }
     h1 { animation: none; text-shadow: 0 0 6px var(--cyan); }
+    /* Status still has to be legible without motion, so the failing dot
+       keeps a permanently stronger glow instead of blinking for it. */
+    .dot.ok { animation: none; }
+    .dot.bad { animation: none; box-shadow: 0 0 11px currentColor, 0 0 20px currentColor; }
   }
 
   .status-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; }
@@ -49,6 +53,31 @@
   .status-card .name { font-weight:600; text-transform:capitalize; }
   .status-card .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; box-shadow: 0 0 6px currentColor; }
   .dot.ok { background:var(--ok); color:var(--ok); } .dot.bad { background:var(--warn); color:var(--warn); }
+
+  /* The dots animate off currentColor, so one pair of keyframes works for
+     any status colour without hardcoding the palette. */
+
+  /* Healthy: a slow breath. Long enough that a wall of green reads as
+     calm rather than as a grid of things demanding attention. */
+  @keyframes dot-breathe {
+    0%, 100% { box-shadow: 0 0 4px currentColor; opacity: .78; }
+    50%      { box-shadow: 0 0 9px currentColor, 0 0 15px currentColor; opacity: 1; }
+  }
+  /* Broken: a double blink, then a pause. Deliberately not a sine wave --
+     an irregular rhythm is what the eye catches in peripheral vision,
+     which is the entire job of this dot. */
+  @keyframes dot-alarm {
+    0%   { box-shadow: 0 0 4px currentColor; opacity: 1;  transform: scale(1); }
+    8%   { box-shadow: 0 0 11px currentColor, 0 0 20px currentColor; opacity: 1; transform: scale(1.35); }
+    16%  { box-shadow: 0 0 3px currentColor; opacity: .35; transform: scale(1); }
+    24%  { box-shadow: 0 0 11px currentColor, 0 0 20px currentColor; opacity: 1; transform: scale(1.35); }
+    32%  { box-shadow: 0 0 3px currentColor; opacity: .35; transform: scale(1); }
+    100% { box-shadow: 0 0 4px currentColor; opacity: .55; transform: scale(1); }
+  }
+  .dot.ok  { animation: dot-breathe 3.2s ease-in-out infinite; }
+  .dot.bad { animation: dot-alarm 1.8s ease-out infinite; }
+  /* .dot.unknown stays still on purpose: an undetected service is not an
+     incident, and animating it would put it on equal footing with one. */
   .status-card .meta { font-size:12px; color:var(--soft); margin-top:4px; }
   /* Undetected apps read as deliberately-dimmed rather than broken. */
   .status-card.undetected { opacity:0.55; border-style:dashed; }
