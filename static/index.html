@@ -298,8 +298,42 @@ function renderStatusGrid(apps) {
   visible.forEach(a => {
     const card = el("div", {class: `status-card${a.detected ? "" : " undetected"}`});
     const dot = a.detected ? "ok" : (a.reachable ? "unknown" : "bad");
+    const dotEl = el("span", {class: `dot ${dot}`});
+    // Start each healthy dot at a different point in its breath, so the
+    // grid shimmers instead of pulsing as one block.
+    //
+    // The offset is hashed from the app name rather than randomised,
+    // because this grid re-renders (the show-undetected toggle rebuilds
+    // it) and a fresh random number each time would restart the
+    // animation and make every dot visibly jump. Hashing means an app
+    // keeps its phase for as long as it is called what it is called.
+    //
+    // The delay is NEGATIVE: that seeks into the animation and plays
+    // immediately. A positive delay would leave the dot sitting dark
+    // until its turn came round, which is the opposite of the point.
+    //
+    // Failing dots are deliberately left in sync. Several things broken
+    // at once blinking together reads as one event; scattering their
+    // phase would make it look like unrelated noise.
+    if (dot === "ok") {
+      // Phase from position in the FULL app list (not the visible one),
+      // so ticking show-undetected does not reshuffle everyone.
+      //
+      // Stepping by the golden ratio rather than i/n on purpose. Even
+      // spacing puts adjacent cards at adjacent phases, which reads as a
+      // wave marching across the grid -- obviously mechanical. The golden
+      // ratio is the classic low-discrepancy step: still spread across
+      // the whole cycle, but neighbours land far apart, so it looks
+      // scattered instead of choreographed.
+      //
+      // Hashing the name was the first attempt and was worse: short names
+      // that all end in "arr" collided, putting sonarr and lidarr 21ms
+      // apart, which is unison as far as the eye is concerned.
+      const phase = ((apps.indexOf(a) * 0.6180339887) % 1) * 3.2;
+      dotEl.style.animationDelay = `-${phase.toFixed(3)}s`;
+    }
     card.appendChild(el("div", {class: "name"},
-      el("span", {class: `dot ${dot}`}), document.createTextNode(a.name)));
+      dotEl, document.createTextNode(a.name)));
     // For a detected app the version is the useful line; for anything
     // else the reason it is not usable is.
     card.appendChild(el("div", {class: "meta",
