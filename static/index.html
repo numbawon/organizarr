@@ -275,6 +275,24 @@ function renderStatusGrid(apps) {
     // else the reason it is not usable is.
     card.appendChild(el("div", {class: "meta",
       text: a.detected ? (a.version || "reachable") : (a.error || "unreachable")}));
+    // Cleanuparr reports no version, so the meta line above would just
+    // say "reachable". Its /api/auth/status gives something worth the
+    // space instead: whether it finished setup and how it authenticates.
+    if (a.cleanuparr) {
+      const c = a.cleanuparr;
+      const bits = [];
+      if (!c.setup_completed) bits.push("first-run setup pending");
+      if (c.oidc_enabled) {
+        bits.push("OIDC" + (c.oidc_provider ? ` via ${c.oidc_provider}` : "")
+                         + (c.oidc_exclusive ? ", exclusive" : ""));
+      } else {
+        bits.push("local login only");
+      }
+      // An active auth bypass means the API is answering unauthenticated.
+      // That is worth seeing on the dashboard rather than discovering.
+      if (c.auth_bypass) bits.push("AUTH BYPASS ACTIVE");
+      card.appendChild(el("div", {class: "meta", text: bits.join(" \u00b7 ")}));
+    }
     grid.appendChild(card);
   });
 }

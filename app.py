@@ -309,15 +309,41 @@ async def status():
             "api_key_source": None,
         }
 
-        # cleanuparr is reachability-only: it has no shared settings API
-        # and needs no key to answer its health endpoint.
+        # Cleanuparr is reachability-only here: its settings API is real
+        # and writable, but every route on it is JWT-gated and we hold no
+        # token, so there is nothing to render as editable.
+        #
+        # The probe is /api/auth/status, NOT /health. Cleanuparr serves an
+        # Angular SPA and its static handler answers 200 with index.html
+        # for any unrecognised path, so /health "succeeded" whether or not
+        # the backend worked -- a locked database or a failed migration
+        # still returned 200 and a green tick. /api/auth/status is a real
+        # endpoint, is deliberately unauthenticated so the login page can
+        # decide what to render, and returns JSON. Requiring valid JSON
+        # back is what makes this prove the backend rather than the file
+        # server.
         if cfg["kind"] == "cleanuparr":
             try:
                 async with httpx.AsyncClient(base_url=cfg["base"], timeout=10) as c:
-                    r = await c.get("/health", follow_redirects=True)
+                    r = await c.get("/api/auth/status", follow_redirects=True)
                     r.raise_for_status()
+                    status = r.json()  # SPA fallback is HTML and raises here
+                    if not isinstance(status, dict) or "setupCompleted" not in status:
+                        raise ValueError("unexpected payload from /api/auth/status")
                     entry["reachable"] = True
                     entry["detected"] = True
+                    # Surface the bits worth seeing at a glance. setup_completed
+                    # false means it is sitting on its first-run wizard, which
+                    # looks identical to "working" from the outside otherwise.
+                    entry["cleanuparr"] = {
+                        "setup_completed": bool(status.get("setupCompleted")),
+                        "oidc_enabled": bool(status.get("oidcEnabled")),
+                        "oidc_provider": status.get("oidcProviderName") or None,
+                        "oidc_exclusive": bool(status.get("oidcExclusiveMode")),
+                        "auth_bypass": bool(status.get("authBypassActive")),
+                    }
+                    if not status.get("setupCompleted"):
+                        entry["error"] = "reachable, but still on first-run setup"
             except Exception as e:  # noqa: BLE001
                 entry["error"] = str(e)
             out.append(entry)
