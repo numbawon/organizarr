@@ -97,6 +97,41 @@ survive a restart (recommended).
 | Sonarr, Radarr, Lidarr, Prowlarr | `config.xml` | `<ApiKey>` element |
 | Bazarr | `config.yaml` | `auth.apikey` |
 | LazyLibrarian | `config.ini` | `api_key` |
+| Cleanuparr | `users.db` (SQLite) | `users.api_key`, once `setup_completed` |
+
+Cleanuparr's database is opened read-only through a URI, and deliberately
+not with `immutable=1`: the app holds it open in WAL mode, so an immutable
+open can hand back a snapshot from before the key was written.
+
+## Wiring Cleanuparr to the *arr apps
+
+Cleanuparr needs every *arr's URL and API key to act on their queues. On a
+fresh deploy that is a pile of copy-paste out of config files Organizarr has
+already read, and it is the only component holding all of them, so it can do
+the wiring itself.
+
+| Endpoint | Does |
+|---|---|
+| `GET /api/cleanuparr/arr` | Read-only. Reports what would change. Writes nothing. |
+| `POST /api/cleanuparr/arr/sync` | Creates missing instances, re-enables disabled ones. |
+| `POST /api/cleanuparr/arr/sync?rewrite_keys=true` | Also pushes the current key over existing instances. |
+
+**Why `rewrite_keys` exists.** Cleanuparr masks the API key on read: a `GET`
+returns `••••••••`, never the stored value. So whether an existing instance
+still holds the right key cannot be determined from outside, and comparing
+the mask against the real key would mark every instance stale forever. The
+default is therefore to leave an existing, enabled instance alone and report
+`key_verifiable: false`. Use `rewrite_keys=true` after rotating an *arr's
+key, which is the one case where the stored value is known to be wrong.
+
+Instances are matched on URL, so an entry pointing somewhere else is
+reported under `other_instances` rather than being overwritten.
+
+Only Sonarr, Radarr and Lidarr are mapped. Cleanuparr's controller also
+carries `readarr`, `whisparr`, `sportarr` and `lazylibrarian`, but support is
+probed per app rather than assumed: on the version tested, `lazylibrarian`
+answered with the SPA fallback (HTML, not JSON), which is reported as
+`unsupported` instead of failing.
 
 ## Security
 

@@ -27,6 +27,7 @@ import configparser
 import json
 import os
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -71,10 +72,11 @@ _APP_SPECS = [
     ("prowlarr", "prowlarr", "v1"),
     ("bazarr", "bazarr", None),
     ("lazylibrarian", "lazylibrarian", None),
-    # Not a settings-provider app: Cleanuparr has its own API but no
-    # shared *arr settings shape, so it is tracked for reachability only.
-    # It belongs here because it acts on the same download clients and
-    # *arr queues, so "is it actually up" is worth seeing in one place.
+    # Cleanuparr does not share the *arr settings shape, so it keeps its
+    # own kind rather than joining the servarr branch. It is no longer
+    # reachability-only though: it CONSUMES the other apps' URLs and API
+    # keys, and this container is the only thing holding all of them, so
+    # it also gets the arr-wiring routes at the bottom of this file.
     ("cleanuparr", "cleanuparr", None),
 ]
 
@@ -145,6 +147,32 @@ def _read_api_key(path: str | None) -> str | None:
     if p.suffix in (".yaml", ".yml"):
         data = yaml.safe_load(p.read_text()) or {}
         return (data.get("auth") or {}).get("apikey") or None
+    if p.suffix == ".db":
+        # Cleanuparr keeps its API key in SQLite rather than a text config,
+        # on the user row, and only once the first-run wizard is done.
+        #
+        # Opened read-only through a URI, and NOT with immutable=1: the app
+        # holds this database open in WAL mode, so an immutable open can
+        # return a stale snapshot that predates the key being written.
+        # mode=ro can itself fail on a WAL database when SQLite cannot
+        # create the -shm sidecar next to a read-only mount, hence the
+        # fallback rather than a single attempt.
+        for uri in (f"file:{p}?mode=ro", f"file:{p}?immutable=1"):
+            try:
+                con = sqlite3.connect(uri, uri=True, timeout=5)
+                try:
+                    row = con.execute(
+                        "select api_key from users "
+                        "where api_key is not null and api_key != '' "
+                        "and setup_completed = 1 limit 1"
+                    ).fetchone()
+                finally:
+                    con.close()
+                if row and row[0]:
+                    return row[0]
+            except sqlite3.Error:
+                continue
+        return None
     if p.suffix == ".ini":
         cp = configparser.ConfigParser()
         cp.read(p)
@@ -346,6 +374,18 @@ async def status():
                         entry["error"] = "reachable, but still on first-run setup"
             except Exception as e:  # noqa: BLE001
                 entry["error"] = str(e)
+            # Cleanuparr DOES have an API key, unlike when this block only
+            # probed reachability: it lives in users.db and gates
+            # /api/configuration/*, which is what the arr-wiring routes
+            # below use. Report it the same way every other app does so a
+            # missing key is visible here rather than as a 503 later.
+            if _get_api_key(name):
+                entry["api_key"] = True
+                entry["api_key_source"] = (
+                    "config" if _read_api_key(config_path) else "override"
+                )
+            elif config_path and not entry["config_mounted"]:
+                entry.setdefault("error", f"config file not found at {config_path} (volume not mounted?)")
             out.append(entry)
             continue
 
@@ -595,6 +635,155 @@ async def set_lazylibrarian_settings(changes: dict[str, dict[str, Any]]):
                 if r.text.strip() != "OK":
                     raise HTTPException(502, f"{group}.{name}: {r.text}")
     return {"ok": True}
+
+
+
+# ---------------------------------------------------------------------
+# Cleanuparr arr wiring.
+#
+# Cleanuparr needs every *arr's URL and API key to act on their queues,
+# and on a fresh deploy that is a pile of copy-paste out of config files
+# that this container has already read. It is the one component holding
+# all of them, so wiring them together belongs here.
+#
+# Its API is the same shape as the servarr family -- X-Api-Key, JSON --
+# so _client() works unchanged. Its own key lives in users.db, which is
+# why _read_api_key grew a SQLite branch.
+#
+# The keys never reach the browser. The diff below reports whether each
+# instance matches, not what it is set to, matching how /api/status
+# reports api_key as a bool.
+# ---------------------------------------------------------------------
+
+# organizarr app name -> Cleanuparr's endpoint segment. Deliberately not
+# every app Cleanuparr supports upstream: readarr/whisparr/sportarr are
+# in its controller but not in this stack, and lazylibrarian is in its
+# controller yet answered with the SPA fallback on the deployed version,
+# so support is probed per app rather than assumed from the source.
+CLEANUPARR_ARR_MAP = {"sonarr": "sonarr", "radarr": "radarr", "lidarr": "lidarr"}
+
+
+async def _arr_major_version(name: str) -> float:
+    """Cleanuparr wants a numeric major version on each instance."""
+    try:
+        info = await _servarr_get(name, "/system/status")
+        return float(str(info.get("version", "0")).split(".")[0] or 0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+async def _cleanuparr_arr_state() -> list[dict[str, Any]]:
+    """What Cleanuparr holds vs what this container knows, per app."""
+    _require_kind("cleanuparr", "cleanuparr", "cleanuparr instance")
+    rows: list[dict[str, Any]] = []
+    async with _client("cleanuparr") as cc:
+        for name, segment in CLEANUPARR_ARR_MAP.items():
+            row: dict[str, Any] = {"app": name, "action": "none"}
+            if name not in APPS:
+                row["action"] = "skip"
+                row["reason"] = f"{name} not configured here"
+                rows.append(row)
+                continue
+            want_key = _get_api_key(name)
+            if not want_key:
+                row["action"] = "skip"
+                row["reason"] = f"no API key for {name} yet"
+                rows.append(row)
+                continue
+            want_url = APPS[name]["base"]
+            row["url"] = want_url
+            try:
+                r = await cc.get(f"/api/configuration/{segment}")
+                if "application/json" not in r.headers.get("content-type", ""):
+                    # Cleanuparr serves its SPA for unknown paths, so a 200
+                    # of HTML means this version has no such endpoint.
+                    row["action"] = "unsupported"
+                    row["reason"] = "endpoint returned HTML (not supported by this version)"
+                    rows.append(row)
+                    continue
+                r.raise_for_status()
+                cfg = r.json()
+            except Exception as e:  # noqa: BLE001
+                row["action"] = "error"
+                row["reason"] = str(e)[:160]
+                rows.append(row)
+                continue
+
+            row["config_id"] = cfg.get("id")
+            existing = [i for i in (cfg.get("instances") or [])
+                        if (i.get("url") or "").rstrip("/") == want_url.rstrip("/")]
+            match = existing[0] if existing else None
+            if match is None:
+                row["action"] = "create"
+                # An instance on a DIFFERENT url is not ours to touch; report
+                # it so a stale entry is visible rather than silently ignored.
+                row["other_instances"] = [i.get("url") for i in (cfg.get("instances") or [])]
+            else:
+                row["instance_id"] = match.get("id")
+                row["enabled"] = bool(match.get("enabled"))
+                # Cleanuparr masks the key on read -- GET returns bullets,
+                # never the stored value -- so whether it still matches the
+                # *arr's real key CANNOT be determined from here. Saying
+                # "matches" either way would be a guess, and comparing the
+                # mask to the real key marks every instance stale forever.
+                # Report it as unverifiable and let the caller decide.
+                row["key_verifiable"] = False
+                row["action"] = "enable" if not match.get("enabled") else "none"
+            rows.append(row)
+    return rows
+
+
+@app.get("/api/cleanuparr/arr")
+async def cleanuparr_arr_status():
+    """Read-only: what would change if you synced. Writes nothing."""
+    return {"apps": await _cleanuparr_arr_state()}
+
+
+@app.post("/api/cleanuparr/arr/sync")
+async def cleanuparr_arr_sync(rewrite_keys: bool = False):
+    """Create or correct Cleanuparr's *arr instances from what we know.
+
+    Creates anything missing and re-enables anything disabled. Because the
+    stored API key cannot be read back (see _cleanuparr_arr_state), an
+    existing, enabled instance is left alone by default. Pass
+    rewrite_keys=true to push the current key over it anyway, which is the
+    fix after rotating an *arr's key -- the only case where the stored value
+    is known to be wrong.
+    """
+    state = await _cleanuparr_arr_state()
+    if rewrite_keys:
+        for row in state:
+            if row["action"] == "none" and row.get("instance_id"):
+                row["action"] = "update"
+    results: list[dict[str, Any]] = []
+    async with _client("cleanuparr") as cc:
+        for row in state:
+            action, name = row["action"], row["app"]
+            if action in ("none", "skip", "unsupported", "error"):
+                results.append({"app": name, "action": action,
+                                "reason": row.get("reason"), "ok": action == "none"})
+                continue
+            segment = CLEANUPARR_ARR_MAP[name]
+            body = {
+                "enabled": True,
+                "name": name.capitalize(),
+                "url": row["url"],
+                "apiKey": _get_api_key(name),
+                "version": await _arr_major_version(name),
+            }
+            try:
+                if action == "create":
+                    r = await cc.post(f"/api/configuration/{segment}/instances", json=body)
+                else:  # "enable" or "update" -- both are a full PUT of the instance
+                    r = await cc.put(
+                        f"/api/configuration/{segment}/instances/{row['instance_id']}", json=body
+                    )
+                r.raise_for_status()
+                results.append({"app": name, "action": action, "ok": True})
+            except Exception as e:  # noqa: BLE001
+                results.append({"app": name, "action": action, "ok": False,
+                                "reason": str(e)[:200]})
+    return {"results": results}
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
