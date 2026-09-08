@@ -88,9 +88,9 @@
   /* Row of actions under a table: buttons and their modifier checkbox on
      one line, so the checkbox reads as belonging to the button beside it
      rather than floating under the table. */
-  #cp-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  .conn-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
                 margin-top:10px; }
-  #cp-actions label { font-size:12px; color:var(--soft); display:flex;
+  .conn-actions label { font-size:12px; color:var(--soft); display:flex;
                       align-items:center; gap:6px; cursor:pointer; margin:0; }
   .status-bar label { font-size:12px; color:var(--soft); display:flex;
                       align-items:center; gap:6px; cursor:pointer; }
@@ -197,31 +197,21 @@
     </div>
   </details>
 
-  <details id="cleanuparr-section">
-    <summary>Cleanuparr</summary>
+  <details id="connections-section">
+    <summary>Connections</summary>
     <div class="body">
-      <fieldset>
-        <legend>*arr connections</legend>
-        <p class="hint">
-          Cleanuparr needs each *arr's URL and API key to act on its queue.
-          Organizarr already has both, so it can write them in rather than
-          leaving it as copy-paste.
-        </p>
-        <div id="cp-arr"></div>
-        <div id="cp-actions">
-          <button id="cp-check" class="secondary">Check</button>
-          <button id="cp-sync">Sync</button>
-          <label id="cp-rewrite-wrap">
-            <input type="checkbox" id="cp-rewrite">
-            also rewrite existing keys
-          </label>
-        </div>
-        <p class="hint">
-          Cleanuparr masks stored keys on read, so whether an existing entry
-          still holds the right key cannot be checked from here. Sync leaves
-          working entries alone; tick the box after rotating an *arr's key.
-        </p>
-      </fieldset>
+      <p class="hint">
+        Which apps hold which other app's URL and API key. Several apps here
+        consume the *arr apps rather than being configured like them, and a
+        wrong entry fails quietly: nothing tells you the link broke, only
+        that results stopped appearing.
+      </p>
+      <div id="conn-list"></div>
+      <p class="hint">
+        Some consumers mask the key they store, so whether it still matches
+        cannot be checked from here. Those show as unverifiable and are left
+        alone unless you ask for a rewrite.
+      </p>
     </div>
   </details>
 </main>
@@ -738,87 +728,95 @@ function loadLazyLibrarian() {
   loadKeyValueApp("lazylibrarian", "#lazylibrarian-section", "/api/lazylibrarian/settings", LAZYLIBRARIAN_SECTIONS, "ll-general");
 }
 
-// ---- Cleanuparr: wire the *arr apps into it -----------------------------
-// The keys themselves never come down here -- the API reports what would
-// change, not what anything is set to. See /api/cleanuparr/arr.
-const CP_LABEL = {
-  none: "configured",
-  create: "will be added",
+// ---- Connections: who holds whose URL and key --------------------------
+// Keys never come down here. The API reports whether a link matches, not
+// what anything is set to, and says so explicitly where the consumer masks
+// its stored key.
+const CONN_LABEL = {
+  none: "ok",
+  create: "missing, will be added",
   enable: "disabled, will be re-enabled",
-  update: "key will be rewritten",
+  update: "wrong, will be corrected",
   skip: "skipped",
-  unsupported: "not supported by this Cleanuparr version",
+  unsupported: "not supported by this version",
   error: "error",
 };
 
-function renderCleanuparrRows(apps, wrap) {
-  wrap.textContent = "";
-  const table = el("table");
-  const tbody = el("tbody");
-  apps.forEach(a => {
-    const tr = el("tr");
-    tr.appendChild(el("td", {text: a.app}));
-    tr.appendChild(el("td", {text: CP_LABEL[a.action] || a.action}));
-    // Only say something about the key when there is something true to say.
-    const note = a.reason
-      ? a.reason
-      : a.key_verifiable === false
-        ? "key present, cannot be verified"
-        : a.url || "";
-    tr.appendChild(el("td", {text: note}));
-    tbody.appendChild(tr);
-    if (a.other_instances?.length) {
-      const extra = el("tr");
-      extra.appendChild(el("td", {text: ""}));
-      extra.appendChild(el("td", {colspan: "2",
-        text: `other entries left alone: ${a.other_instances.join(", ")}`}));
-      tbody.appendChild(extra);
-    }
-  });
-  table.appendChild(tbody);
-  wrap.appendChild(table);
+function connNote(l) {
+  if (l.reason) return l.reason;
+  if (l.wrong?.length) return `wrong: ${l.wrong.join(", ")}`;
+  if (l.key_verifiable === false) return "key present, cannot be verified";
+  return l.url || "";
 }
 
-async function loadCleanuparr() {
-  const wrap = $("#cp-arr");
-  const actions = $("#cp-actions");
-  const refresh = async () => {
-    try {
-      const d = await api("/api/cleanuparr/arr");
-      renderCleanuparrRows(d.apps, wrap);
-      return d.apps;
-    } catch (e) {
-      wrap.textContent = "";
-      wrap.appendChild(el("div", {class:"msg err", text: e.message}));
-      return null;
-    }
-  };
-  await refresh();
-
-  $("#cp-check").onclick = async () => {
-    await refresh();
-    msg(actions, "Checked.", true);
-  };
-
-  $("#cp-sync").onclick = async () => {
-    const rewrite = $("#cp-rewrite").checked;
-    try {
-      const d = await api(
-        `/api/cleanuparr/arr/sync${rewrite ? "?rewrite_keys=true" : ""}`,
-        {method: "POST"}
-      );
-      const failed = d.results.filter(r => !r.ok);
-      await refresh();
-      if (failed.length) {
-        msg(actions, failed.map(f => `${f.app}: ${f.reason || "failed"}`).join("; "), false);
-      } else {
-        const changed = d.results.filter(r => r.action !== "none" && r.action !== "skip");
-        msg(actions, changed.length
-          ? `Synced ${changed.map(c => c.app).join(", ")}.`
-          : "Already up to date.", true);
+function renderConnections(groups, wrap) {
+  wrap.textContent = "";
+  groups.forEach(g => {
+    const box = el("fieldset");
+    box.appendChild(el("legend", {text: g.consumer}));
+    const table = el("table");
+    const tbody = el("tbody");
+    g.links.forEach(l => {
+      const tr = el("tr");
+      tr.appendChild(el("td", {text: l.producer}));
+      tr.appendChild(el("td", {text: CONN_LABEL[l.action] || l.action}));
+      tr.appendChild(el("td", {text: connNote(l)}));
+      tbody.appendChild(tr);
+      if (l.other?.length) {
+        const extra = el("tr");
+        extra.appendChild(el("td", {text: ""}));
+        extra.appendChild(el("td", {colspan: "2",
+          text: `other entries left alone: ${l.other.join(", ")}`}));
+        tbody.appendChild(extra);
       }
-    } catch (e) { msg(actions, e.message, false); }
-  };
+    });
+    table.appendChild(tbody);
+    box.appendChild(table);
+
+    const actions = el("div", {class: "conn-actions"});
+    const sync = el("button", {text: "Sync"});
+    actions.appendChild(sync);
+    // Only Cleanuparr masks its key, so only it has anything to force.
+    let rewrite = null;
+    if (g.links.some(l => l.key_verifiable === false)) {
+      const lbl = el("label");
+      rewrite = el("input", {type: "checkbox"});
+      lbl.appendChild(rewrite);
+      lbl.appendChild(document.createTextNode(" also rewrite existing keys"));
+      actions.appendChild(lbl);
+    }
+    box.appendChild(actions);
+
+    sync.onclick = async () => {
+      const q = rewrite?.checked ? "?rewrite_keys=true" : "";
+      try {
+        const d = await api(`/api/connections/${g.consumer}/sync${q}`, {method: "POST"});
+        const failed = d.results.filter(r => !r.ok);
+        await loadConnections();
+        if (failed.length) {
+          msg(actions, failed.map(f => `${f.producer}: ${f.reason || "failed"}`).join("; "), false);
+        } else {
+          const changed = d.results.filter(r => r.action !== "none" && r.action !== "skip");
+          msg(actions, changed.length
+            ? `Corrected ${changed.map(c => c.producer).join(", ")}.`
+            : "Already correct.", true);
+        }
+      } catch (e) { msg(actions, e.message, false); }
+    };
+    wrap.appendChild(box);
+  });
+}
+
+async function loadConnections() {
+  const wrap = $("#conn-list");
+  try {
+    const d = await api("/api/connections");
+    if (!d.connections.length) { hideSection("connections-section"); return; }
+    renderConnections(d.connections, wrap);
+  } catch (e) {
+    wrap.textContent = "";
+    wrap.appendChild(el("div", {class:"msg err", text: e.message}));
+  }
 }
 
 async function init() {
@@ -849,7 +847,7 @@ async function init() {
   if (byKind.prowlarr?.length) loadProwlarr(); else hideSection("prowlarr-section");
   if (byKind.bazarr?.length) loadBazarr(); else hideSection("bazarr-section");
   if (byKind.lazylibrarian?.length) loadLazyLibrarian(); else hideSection("lazylibrarian-section");
-  if (byKind.cleanuparr?.length) loadCleanuparr(); else hideSection("cleanuparr-section");
+  loadConnections();
 }
 
 init();

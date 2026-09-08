@@ -103,35 +103,66 @@ Cleanuparr's database is opened read-only through a URI, and deliberately
 not with `immutable=1`: the app holds it open in WAL mode, so an immutable
 open can hand back a snapshot from before the key was written.
 
-## Wiring Cleanuparr to the *arr apps
+## Connections
 
-Cleanuparr needs every *arr's URL and API key to act on their queues. On a
-fresh deploy that is a pile of copy-paste out of config files Organizarr has
-already read, and it is the only component holding all of them, so it can do
-the wiring itself.
+Several apps here consume the *arr apps rather than being configured like
+them: Cleanuparr acts on their queues, Seerr requests into them, Prowlarr
+pushes indexers to them, Bazarr pulls their libraries. Each needs the same
+two facts, a reachable URL and a valid API key, and Organizarr is the only
+component already holding all of them.
+
+Getting it wrong fails quietly. Nothing announces that a link broke, only
+that results stop appearing, so the read-only view is worth having even if
+you never press Sync.
 
 | Endpoint | Does |
 |---|---|
-| `GET /api/cleanuparr/arr` | Read-only. Reports what would change. Writes nothing. |
-| `POST /api/cleanuparr/arr/sync` | Creates missing instances, re-enables disabled ones. |
-| `POST /api/cleanuparr/arr/sync?rewrite_keys=true` | Also pushes the current key over existing instances. |
+| `GET /api/connections` | Read-only. What each consumer currently believes. Writes nothing. |
+| `POST /api/connections/{consumer}/sync` | Corrects that consumer's links. |
+| `POST /api/connections/{consumer}/sync?rewrite_keys=true` | Also pushes the current key where it cannot be verified. |
 
-**Why `rewrite_keys` exists.** Cleanuparr masks the API key on read: a `GET`
-returns `••••••••`, never the stored value. So whether an existing instance
-still holds the right key cannot be determined from outside, and comparing
-the mask against the real key would mark every instance stale forever. The
-default is therefore to leave an existing, enabled instance alone and report
-`key_verifiable: false`. Use `rewrite_keys=true` after rotating an *arr's
-key, which is the one case where the stored value is known to be wrong.
+### Which keys can be checked, and which cannot
 
-Instances are matched on URL, so an entry pointing somewhere else is
-reported under `other_instances` rather than being overwritten.
+| Consumer | Key on read | Checkable |
+|---|---|---|
+| Cleanuparr | `••••••••` | no |
+| Prowlarr | `********` (any field with `privacy: apiKey`) | no |
+| Seerr | returned as stored | yes |
+| Bazarr | returned as stored | yes |
 
-Only Sonarr, Radarr and Lidarr are mapped. Cleanuparr's controller also
-carries `readarr`, `whisparr`, `sportarr` and `lazylibrarian`, but support is
-probed per app rather than assumed: on the version tested, `lazylibrarian`
-answered with the SPA fallback (HTML, not JSON), which is reported as
-`unsupported` instead of failing.
+Where the key is masked, a stale one is indistinguishable from a correct
+one from outside, so those links are left alone unless `rewrite_keys=true`
+is passed. Comparing the mask against the real key would instead mark every
+link permanently wrong, which is exactly the bug this table exists to
+prevent — it was written twice during development, once for Cleanuparr and
+once for Prowlarr.
+
+Where the key is readable, a wrong one shows up as an ordinary mismatch and
+is corrected by a plain sync.
+
+### What is checked besides the key
+
+URL, and the *arr's own `urlBase`, read from its `config.xml` rather than
+assumed. Seerr stores that separately from the hostname, and on the stack
+this was built against it held a DOMAIN fragment (`/sonarr.example.com`)
+where the app expects a path (`/sonarr`) — unreachable, and it presents as
+a hostname problem.
+
+Seerr's `PUT` also rejects the read-only extras it hands back, `id`
+included, so only the accepted fields are sent. A full round-trip is a 400
+with no useful message.
+
+An entry pointing at some other URL is reported as left alone rather than
+overwritten.
+
+### Limits
+
+`create` is not supported for Seerr: a new instance needs a quality profile
+and root folder chosen inside Seerr first, so an existing instance is
+corrected but a missing one is reported for you to add.
+
+Recyclarr is deliberately absent. It has no API, only `settings.yml` and a
+`configs/` directory, and every config here is mounted read-only by design.
 
 ## Security
 

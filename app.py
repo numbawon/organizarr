@@ -72,6 +72,9 @@ _APP_SPECS = [
     ("prowlarr", "prowlarr", "v1"),
     ("bazarr", "bazarr", None),
     ("lazylibrarian", "lazylibrarian", None),
+    # Seerr holds Sonarr/Radarr connections of its own, so it is a
+    # connection consumer like Cleanuparr rather than a settings provider.
+    ("seerr", "seerr", None),
     # Cleanuparr does not share the *arr settings shape, so it keeps its
     # own kind rather than joining the servarr branch. It is no longer
     # reachability-only though: it CONSUMES the other apps' URLs and API
@@ -147,6 +150,16 @@ def _read_api_key(path: str | None) -> str | None:
     if p.suffix in (".yaml", ".yml"):
         data = yaml.safe_load(p.read_text()) or {}
         return (data.get("auth") or {}).get("apikey") or None
+    if p.suffix == ".json":
+        # Seerr keeps its key in its own settings file rather than a
+        # dedicated config format. Read-only, and tolerant of the file
+        # being mid-write: Seerr rewrites settings.json wholesale, so a
+        # torn read is a normal transient rather than a fault.
+        try:
+            data = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        return ((data.get("main") or {}).get("apiKey")) or None
     if p.suffix == ".db":
         # Cleanuparr keeps its API key in SQLite rather than a text config,
         # on the user row, and only once the first-run wizard is done.
@@ -639,32 +652,40 @@ async def set_lazylibrarian_settings(changes: dict[str, dict[str, Any]]):
 
 
 # ---------------------------------------------------------------------
-# Cleanuparr arr wiring.
+# Connections: which app holds which other app's URL and API key.
 #
-# Cleanuparr needs every *arr's URL and API key to act on their queues,
-# and on a fresh deploy that is a pile of copy-paste out of config files
-# that this container has already read. It is the one component holding
-# all of them, so wiring them together belongs here.
+# Several apps here consume the *arr apps rather than being configured
+# like them. Cleanuparr acts on their queues, Seerr requests into them,
+# Prowlarr pushes indexers to them, Bazarr pulls their libraries. Every
+# one needs the same two facts -- a reachable URL and a valid API key --
+# and Organizarr is the only component already holding all of them.
 #
-# Its API is the same shape as the servarr family -- X-Api-Key, JSON --
-# so _client() works unchanged. Its own key lives in users.db, which is
-# why _read_api_key grew a SQLite branch.
+# Getting that wrong fails silently. Seerr spent this stack's *arr move
+# pointed at a hostname that no longer resolved, with nothing surfacing
+# it, which is the entire argument for a read-only view that just says
+# what each app currently believes.
 #
-# The keys never reach the browser. The diff below reports whether each
-# instance matches, not what it is set to, matching how /api/status
-# reports api_key as a bool.
+# Keys never reach the browser. A link reports whether it matches, not
+# what it is set to, and where the consumer masks its stored key (see
+# Cleanuparr below) it reports that the answer is unknowable rather than
+# guessing.
 # ---------------------------------------------------------------------
 
-# organizarr app name -> Cleanuparr's endpoint segment. Deliberately not
-# every app Cleanuparr supports upstream: readarr/whisparr/sportarr are
-# in its controller but not in this stack, and lazylibrarian is in its
-# controller yet answered with the SPA fallback on the deployed version,
-# so support is probed per app rather than assumed from the source.
-CLEANUPARR_ARR_MAP = {"sonarr": "sonarr", "radarr": "radarr", "lidarr": "lidarr"}
+# consumer -> producers it needs. Only apps actually configured here are
+# ever contacted; anything absent is reported as skipped.
+CONNECTIONS = {
+    "cleanuparr": ["sonarr", "radarr", "lidarr"],
+    "seerr": ["sonarr", "radarr"],
+    "prowlarr": ["sonarr", "radarr", "lidarr"],
+    "bazarr": ["sonarr", "radarr"],
+}
 
 
-async def _arr_major_version(name: str) -> float:
-    """Cleanuparr wants a numeric major version on each instance."""
+def _producer_url(name: str) -> str:
+    return APPS[name]["base"].rstrip("/")
+
+
+async def _producer_version(name: str) -> float:
     try:
         info = await _servarr_get(name, "/system/status")
         return float(str(info.get("version", "0")).split(".")[0] or 0)
@@ -672,118 +693,407 @@ async def _arr_major_version(name: str) -> float:
         return 0.0
 
 
-async def _cleanuparr_arr_state() -> list[dict[str, Any]]:
-    """What Cleanuparr holds vs what this container knows, per app."""
-    _require_kind("cleanuparr", "cleanuparr", "cleanuparr instance")
+def _producer_url_base(name: str) -> str:
+    """The *arr's own urlBase, which consumers must append.
+
+    Seerr stores this separately from the hostname and had it set to a
+    DOMAIN fragment rather than a path, which is unreachable and looks
+    like a hostname problem. Read it from the app itself instead of
+    assuming.
+    """
+    cfg = APPS.get(name, {})
+    path = cfg.get("config")
+    if path and Path(path).suffix == ".xml" and Path(path).exists():
+        m = re.search(r"<UrlBase>([^<]*)</UrlBase>", Path(path).read_text())
+        if m:
+            return ("/" + m.group(1).strip("/")) if m.group(1).strip("/") else ""
+    return ""
+
+
+def _skeleton(consumer: str, producer: str) -> dict[str, Any] | None:
+    """Shared preflight. Returns a row to short-circuit on, or None."""
+    if producer not in APPS:
+        return {"producer": producer, "action": "skip",
+                "reason": f"{producer} not configured here"}
+    if not _get_api_key(producer):
+        return {"producer": producer, "action": "skip",
+                "reason": f"no API key for {producer} yet"}
+    return None
+
+
+async def _links_cleanuparr() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     async with _client("cleanuparr") as cc:
-        for name, segment in CLEANUPARR_ARR_MAP.items():
-            row: dict[str, Any] = {"app": name, "action": "none"}
-            if name not in APPS:
-                row["action"] = "skip"
-                row["reason"] = f"{name} not configured here"
-                rows.append(row)
+        for producer in CONNECTIONS["cleanuparr"]:
+            pre = _skeleton("cleanuparr", producer)
+            if pre:
+                rows.append(pre)
                 continue
-            want_key = _get_api_key(name)
-            if not want_key:
-                row["action"] = "skip"
-                row["reason"] = f"no API key for {name} yet"
-                rows.append(row)
-                continue
-            want_url = APPS[name]["base"]
-            row["url"] = want_url
+            row: dict[str, Any] = {"producer": producer, "action": "none",
+                                   "url": _producer_url(producer)}
             try:
-                r = await cc.get(f"/api/configuration/{segment}")
+                r = await cc.get(f"/api/configuration/{producer}")
                 if "application/json" not in r.headers.get("content-type", ""):
-                    # Cleanuparr serves its SPA for unknown paths, so a 200
-                    # of HTML means this version has no such endpoint.
-                    row["action"] = "unsupported"
-                    row["reason"] = "endpoint returned HTML (not supported by this version)"
+                    row.update(action="unsupported",
+                               reason="endpoint returned HTML (not supported by this version)")
                     rows.append(row)
                     continue
                 r.raise_for_status()
                 cfg = r.json()
             except Exception as e:  # noqa: BLE001
-                row["action"] = "error"
-                row["reason"] = str(e)[:160]
+                row.update(action="error", reason=str(e)[:160])
                 rows.append(row)
                 continue
-
-            row["config_id"] = cfg.get("id")
-            existing = [i for i in (cfg.get("instances") or [])
-                        if (i.get("url") or "").rstrip("/") == want_url.rstrip("/")]
-            match = existing[0] if existing else None
+            match = next((i for i in (cfg.get("instances") or [])
+                          if (i.get("url") or "").rstrip("/") == row["url"]), None)
             if match is None:
                 row["action"] = "create"
-                # An instance on a DIFFERENT url is not ours to touch; report
-                # it so a stale entry is visible rather than silently ignored.
-                row["other_instances"] = [i.get("url") for i in (cfg.get("instances") or [])]
+                row["other"] = [i.get("url") for i in (cfg.get("instances") or [])]
             else:
                 row["instance_id"] = match.get("id")
                 row["enabled"] = bool(match.get("enabled"))
-                # Cleanuparr masks the key on read -- GET returns bullets,
-                # never the stored value -- so whether it still matches the
-                # *arr's real key CANNOT be determined from here. Saying
-                # "matches" either way would be a guess, and comparing the
-                # mask to the real key marks every instance stale forever.
-                # Report it as unverifiable and let the caller decide.
+                # Cleanuparr returns bullets, never the stored key, so
+                # "does it still match" cannot be answered from out here.
                 row["key_verifiable"] = False
                 row["action"] = "enable" if not match.get("enabled") else "none"
             rows.append(row)
     return rows
 
 
-@app.get("/api/cleanuparr/arr")
-async def cleanuparr_arr_status():
-    """Read-only: what would change if you synced. Writes nothing."""
-    return {"apps": await _cleanuparr_arr_state()}
-
-
-@app.post("/api/cleanuparr/arr/sync")
-async def cleanuparr_arr_sync(rewrite_keys: bool = False):
-    """Create or correct Cleanuparr's *arr instances from what we know.
-
-    Creates anything missing and re-enables anything disabled. Because the
-    stored API key cannot be read back (see _cleanuparr_arr_state), an
-    existing, enabled instance is left alone by default. Pass
-    rewrite_keys=true to push the current key over it anyway, which is the
-    fix after rotating an *arr's key -- the only case where the stored value
-    is known to be wrong.
-    """
-    state = await _cleanuparr_arr_state()
-    if rewrite_keys:
-        for row in state:
-            if row["action"] == "none" and row.get("instance_id"):
-                row["action"] = "update"
-    results: list[dict[str, Any]] = []
-    async with _client("cleanuparr") as cc:
-        for row in state:
-            action, name = row["action"], row["app"]
-            if action in ("none", "skip", "unsupported", "error"):
-                results.append({"app": name, "action": action,
-                                "reason": row.get("reason"), "ok": action == "none"})
+async def _links_seerr() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    async with _client("seerr") as sc:
+        for producer in CONNECTIONS["seerr"]:
+            pre = _skeleton("seerr", producer)
+            if pre:
+                rows.append(pre)
                 continue
-            segment = CLEANUPARR_ARR_MAP[name]
-            body = {
-                "enabled": True,
-                "name": name.capitalize(),
-                "url": row["url"],
-                "apiKey": _get_api_key(name),
-                "version": await _arr_major_version(name),
-            }
+            want_url = _producer_url(producer)
+            host = want_url.split("//", 1)[-1].split(":")[0]
+            port = int(want_url.rsplit(":", 1)[-1]) if ":" in want_url.split("//", 1)[-1] else 80
+            base = _producer_url_base(producer)
+            row: dict[str, Any] = {"producer": producer, "action": "none",
+                                   "url": f"{host}:{port}{base}"}
+            try:
+                r = await sc.get(f"/api/v1/settings/{producer}")
+                r.raise_for_status()
+                instances = r.json()
+            except Exception as e:  # noqa: BLE001
+                row.update(action="error", reason=str(e)[:160])
+                rows.append(row)
+                continue
+            if not instances:
+                row["action"] = "create"
+                rows.append(row)
+                continue
+            inst = instances[0]
+            row["instance_id"] = inst.get("id")
+            # Unlike Cleanuparr, Seerr hands the key back, so this one IS
+            # checkable -- report it rather than pretending otherwise.
+            row["key_verifiable"] = True
+            wrong = []
+            if inst.get("hostname") != host:
+                wrong.append(f"hostname {inst.get('hostname')!r}")
+            if int(inst.get("port") or 0) != port:
+                wrong.append(f"port {inst.get('port')}")
+            if (inst.get("baseUrl") or "") != base:
+                wrong.append(f"baseUrl {inst.get('baseUrl')!r}")
+            if inst.get("apiKey") != _get_api_key(producer):
+                wrong.append("apiKey")
+            if wrong:
+                row["action"] = "update"
+                row["wrong"] = wrong
+            rows.append(row)
+    return rows
+
+
+async def _links_prowlarr() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        apps_cfg = await _servarr_get("prowlarr", "/applications")
+    except Exception as e:  # noqa: BLE001
+        return [{"producer": p, "action": "error", "reason": str(e)[:160]}
+                for p in CONNECTIONS["prowlarr"]]
+    for producer in CONNECTIONS["prowlarr"]:
+        pre = _skeleton("prowlarr", producer)
+        if pre:
+            rows.append(pre)
+            continue
+        row: dict[str, Any] = {"producer": producer, "action": "none",
+                               "url": _producer_url(producer)}
+        match = next((a for a in apps_cfg
+                      if (a.get("implementation") or "").lower() == producer), None)
+        if match is None:
+            row["action"] = "create"
+        else:
+            row["instance_id"] = match.get("id")
+            fields = {f.get("name"): f.get("value") for f in (match.get("fields") or [])}
+            # Prowlarr masks any field marked privacy=apiKey, handing back
+            # eight asterisks rather than the stored value -- the same
+            # behaviour as Cleanuparr's bullets. Comparing that to the real
+            # key marks every application permanently wrong, so the key is
+            # not checkable here either. Only baseUrl can be verified.
+            row["key_verifiable"] = False
+            wrong = []
+            if (fields.get("baseUrl") or "").rstrip("/") != row["url"]:
+                wrong.append(f"baseUrl {fields.get('baseUrl')!r}")
+            if wrong:
+                row["action"] = "update"
+                row["wrong"] = wrong
+        rows.append(row)
+    return rows
+
+
+async def _links_bazarr() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    key = _get_api_key("bazarr")
+    if not key:
+        return [{"producer": p, "action": "error", "reason": "no bazarr API key"}
+                for p in CONNECTIONS["bazarr"]]
+    async with httpx.AsyncClient(base_url=APPS["bazarr"]["base"],
+                                 headers={"X-API-KEY": key}, timeout=15,
+                                 follow_redirects=True) as bc:
+        try:
+            r = await bc.get("/api/system/settings")
+            r.raise_for_status()
+            settings = r.json()
+        except Exception as e:  # noqa: BLE001
+            return [{"producer": p, "action": "error", "reason": str(e)[:160]}
+                    for p in CONNECTIONS["bazarr"]]
+    for producer in CONNECTIONS["bazarr"]:
+        pre = _skeleton("bazarr", producer)
+        if pre:
+            rows.append(pre)
+            continue
+        want_url = _producer_url(producer)
+        host = want_url.split("//", 1)[-1].split(":")[0]
+        port = int(want_url.rsplit(":", 1)[-1]) if ":" in want_url.split("//", 1)[-1] else 80
+        base = _producer_url_base(producer)
+        row: dict[str, Any] = {"producer": producer, "action": "none",
+                               "url": f"{host}:{port}{base}"}
+        sec = settings.get(producer) or {}
+        general = settings.get("general") or {}
+        row["key_verifiable"] = True
+        wrong = []
+        if not general.get(f"use_{producer}"):
+            wrong.append(f"use_{producer} is off")
+        if sec.get("ip") != host:
+            wrong.append(f"ip {sec.get('ip')!r}")
+        if int(sec.get("port") or 0) != port:
+            wrong.append(f"port {sec.get('port')}")
+        if (sec.get("base_url") or "") != base:
+            wrong.append(f"base_url {sec.get('base_url')!r}")
+        if sec.get("apikey") != _get_api_key(producer):
+            wrong.append("apikey")
+        if wrong:
+            row["action"] = "update"
+            row["wrong"] = wrong
+        rows.append(row)
+    return rows
+
+
+_LINK_READERS = {
+    "cleanuparr": _links_cleanuparr,
+    "seerr": _links_seerr,
+    "prowlarr": _links_prowlarr,
+    "bazarr": _links_bazarr,
+}
+
+
+@app.get("/api/connections")
+async def list_connections():
+    """Read-only. What each consumer currently believes about the *arrs."""
+    out = []
+    for consumer, reader in _LINK_READERS.items():
+        if consumer not in APPS:
+            continue
+        try:
+            links = await reader()
+        except HTTPException as e:
+            links = [{"producer": p, "action": "error", "reason": e.detail}
+                     for p in CONNECTIONS[consumer]]
+        except Exception as e:  # noqa: BLE001
+            links = [{"producer": p, "action": "error", "reason": str(e)[:160]}
+                     for p in CONNECTIONS[consumer]]
+        out.append({"consumer": consumer, "links": links})
+    return {"connections": out}
+
+
+async def _sync_cleanuparr(rows: list[dict[str, Any]], rewrite: bool) -> list[dict[str, Any]]:
+    results = []
+    async with _client("cleanuparr") as cc:
+        for row in rows:
+            producer, action = row["producer"], row["action"]
+            if rewrite and action == "none" and row.get("instance_id"):
+                action = "update"
+            if action in ("none", "skip", "unsupported", "error"):
+                results.append({"producer": producer, "action": action,
+                                "ok": action == "none", "reason": row.get("reason")})
+                continue
+            body = {"enabled": True, "name": producer.capitalize(), "url": row["url"],
+                    "apiKey": _get_api_key(producer),
+                    "version": await _producer_version(producer)}
             try:
                 if action == "create":
-                    r = await cc.post(f"/api/configuration/{segment}/instances", json=body)
-                else:  # "enable" or "update" -- both are a full PUT of the instance
+                    r = await cc.post(f"/api/configuration/{producer}/instances", json=body)
+                else:
                     r = await cc.put(
-                        f"/api/configuration/{segment}/instances/{row['instance_id']}", json=body
-                    )
+                        f"/api/configuration/{producer}/instances/{row['instance_id']}", json=body)
                 r.raise_for_status()
-                results.append({"app": name, "action": action, "ok": True})
+                results.append({"producer": producer, "action": action, "ok": True})
             except Exception as e:  # noqa: BLE001
-                results.append({"app": name, "action": action, "ok": False,
+                results.append({"producer": producer, "action": action, "ok": False,
                                 "reason": str(e)[:200]})
-    return {"results": results}
+    return results
 
+
+# Seerr rejects a PUT that carries the read-only extras it hands back --
+# notably `id`, which is in the path already. Send only the fields it
+# actually accepts, or every save is a 400 that says nothing useful.
+_SEERR_PUT_FIELDS = (
+    "name", "hostname", "port", "apiKey", "useSsl", "baseUrl", "activeProfileId",
+    "activeProfileName", "activeDirectory", "is4k", "isDefault", "syncEnabled",
+    "preventSearch", "tagRequests", "tags",
+)
+_SEERR_PUT_EXTRA = {"sonarr": ("enableSeasonFolders", "animeTags", "monitorNewItems"),
+                    "radarr": ("minimumAvailability",)}
+
+
+async def _sync_seerr(rows: list[dict[str, Any]], rewrite: bool) -> list[dict[str, Any]]:
+    results = []
+    async with _client("seerr") as sc:
+        for row in rows:
+            producer, action = row["producer"], row["action"]
+            if action in ("none", "skip", "unsupported", "error"):
+                results.append({"producer": producer, "action": action,
+                                "ok": action == "none", "reason": row.get("reason")})
+                continue
+            if action == "create":
+                results.append({"producer": producer, "action": action, "ok": False,
+                                "reason": "no instance to correct; add it in Seerr first "
+                                          "(it needs a quality profile and root folder "
+                                          "chosen there)"})
+                continue
+            want_url = _producer_url(producer)
+            host = want_url.split("//", 1)[-1].split(":")[0]
+            port = int(want_url.rsplit(":", 1)[-1]) if ":" in want_url.split("//", 1)[-1] else 80
+            try:
+                r = await sc.get(f"/api/v1/settings/{producer}")
+                r.raise_for_status()
+                inst = next(i for i in r.json() if i.get("id") == row["instance_id"])
+                allowed = _SEERR_PUT_FIELDS + _SEERR_PUT_EXTRA.get(producer, ())
+                body = {k: inst[k] for k in allowed if k in inst}
+                body.update(hostname=host, port=port,
+                            baseUrl=_producer_url_base(producer),
+                            apiKey=_get_api_key(producer))
+                r = await sc.put(f"/api/v1/settings/{producer}/{row['instance_id']}", json=body)
+                r.raise_for_status()
+                results.append({"producer": producer, "action": action, "ok": True})
+            except Exception as e:  # noqa: BLE001
+                results.append({"producer": producer, "action": action, "ok": False,
+                                "reason": str(e)[:200]})
+    return results
+
+
+async def _sync_prowlarr(rows: list[dict[str, Any]], rewrite: bool) -> list[dict[str, Any]]:
+    results = []
+    for row in rows:
+        producer, action = row["producer"], row["action"]
+        if rewrite and action == "none" and row.get("instance_id"):
+            action = "update"
+        if action in ("none", "skip", "unsupported", "error"):
+            results.append({"producer": producer, "action": action,
+                            "ok": action == "none", "reason": row.get("reason")})
+            continue
+        try:
+            if action == "create":
+                schema = await _servarr_get("prowlarr", "/applications/schema")
+                tmpl = next(x for x in schema
+                            if (x.get("implementation") or "").lower() == producer)
+                body = dict(tmpl)
+                body["name"] = producer.capitalize()
+                for f in body.get("fields", []):
+                    if f.get("name") == "baseUrl":
+                        f["value"] = _producer_url(producer)
+                    elif f.get("name") == "apiKey":
+                        f["value"] = _get_api_key(producer)
+                    elif f.get("name") == "prowlarrUrl":
+                        f["value"] = APPS["prowlarr"]["base"].rstrip("/")
+                await _servarr_post("prowlarr", "/applications", body)
+            else:
+                apps_cfg = await _servarr_get("prowlarr", "/applications")
+                body = next(a for a in apps_cfg if a.get("id") == row["instance_id"])
+                for f in body.get("fields", []):
+                    if f.get("name") == "baseUrl":
+                        f["value"] = _producer_url(producer)
+                    elif f.get("name") == "apiKey":
+                        f["value"] = _get_api_key(producer)
+                await _servarr_put("prowlarr", f"/applications/{row['instance_id']}", body)
+            results.append({"producer": producer, "action": action, "ok": True})
+        except Exception as e:  # noqa: BLE001
+            results.append({"producer": producer, "action": action, "ok": False,
+                            "reason": str(e)[:200]})
+    return results
+
+
+async def _sync_bazarr(rows: list[dict[str, Any]], rewrite: bool) -> list[dict[str, Any]]:
+    results = []
+    key = _get_api_key("bazarr")
+    async with httpx.AsyncClient(base_url=APPS["bazarr"]["base"],
+                                 headers={"X-API-KEY": key}, timeout=15,
+                                 follow_redirects=True) as bc:
+        for row in rows:
+            producer, action = row["producer"], row["action"]
+            if action in ("none", "skip", "unsupported", "error"):
+                results.append({"producer": producer, "action": action,
+                                "ok": action == "none", "reason": row.get("reason")})
+                continue
+            want_url = _producer_url(producer)
+            host = want_url.split("//", 1)[-1].split(":")[0]
+            port = int(want_url.rsplit(":", 1)[-1]) if ":" in want_url.split("//", 1)[-1] else 80
+            # Bazarr saves via form-encoded settings-<section>-<key> pairs,
+            # the same shape set_bazarr_settings already uses.
+            form = {
+                f"settings-general-use_{producer}": "true",
+                f"settings-{producer}-ip": host,
+                f"settings-{producer}-port": str(port),
+                f"settings-{producer}-base_url": _producer_url_base(producer),
+                f"settings-{producer}-apikey": _get_api_key(producer),
+                f"settings-{producer}-ssl": "false",
+            }
+            try:
+                r = await bc.post("/api/system/settings", data=form)
+                r.raise_for_status()
+                results.append({"producer": producer, "action": action, "ok": True})
+            except Exception as e:  # noqa: BLE001
+                results.append({"producer": producer, "action": action, "ok": False,
+                                "reason": str(e)[:200]})
+    return results
+
+
+_LINK_WRITERS = {
+    "cleanuparr": _sync_cleanuparr,
+    "seerr": _sync_seerr,
+    "prowlarr": _sync_prowlarr,
+    "bazarr": _sync_bazarr,
+}
+
+
+@app.post("/api/connections/{consumer}/sync")
+async def sync_connections(consumer: str, rewrite_keys: bool = False):
+    """Correct one consumer's links to the *arr apps.
+
+    rewrite_keys matters for consumers that mask their stored key on read:
+    Cleanuparr returns bullets, Prowlarr returns asterisks for any field
+    marked privacy=apiKey. For those, a stale key is indistinguishable from
+    a correct one from out here, so an otherwise-fine link is left alone
+    unless this is set. Seerr and Bazarr hand the key back, so a wrong one
+    shows up as an ordinary mismatch and is corrected without it.
+    """
+    if consumer not in _LINK_WRITERS:
+        raise HTTPException(404, f"{consumer}: not a connection consumer")
+    _require_app(consumer)
+    rows = await _LINK_READERS[consumer]()
+    return {"results": await _LINK_WRITERS[consumer](rows, rewrite_keys)}
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
