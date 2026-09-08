@@ -66,30 +66,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
 
-      # Docker Hub shows nothing on the listing page unless it is pushed
-      # there separately -- the image had 520 pulls against an empty
-      # overview. Sync it from the README so it cannot drift, rather than
-      # pasting it once by hand.
+
+      # NOT syncing the Docker Hub description here, deliberately.
       #
-      # Only on the default branch: a tag build would otherwise rewrite the
-      # overview from whatever that tag's README said. Skipped entirely
-      # when Docker Hub is not configured, same as the push above.
-      - name: Sync Docker Hub description
-        if: github.ref == 'refs/heads/main' && vars.DOCKERHUB_USERNAME != ''
-        # Never fail a release over the listing page. The images are
-        # already pushed by the step above; this only updates text, and a
-        # DOCKERHUB_TOKEN that can push images cannot necessarily edit the
-        # repository description -- that returns a bare "Forbidden" with no
-        # indication that scope is the problem. Left as a warning so a
-        # working token starts syncing without any further change.
-        continue-on-error: true
-        uses: peter-evans/dockerhub-description@v4
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ vars.DOCKERHUB_USERNAME }}/organizarr
-          # Docker Hub caps this at 100 bytes and silently truncates, so it
-          # is written here rather than reused from the repo description,
-          # which is longer and would be cut mid-sentence.
-          short-description: "Config hub for the *arr apps: reads their API keys and repairs the links between them"
-          readme-filepath: ./README.md
+      # Docker Hub's API cannot update a repository description with a
+      # personal access token at ANY scope -- Read/Write/Delete included.
+      # It returns a bare "Forbidden" that says nothing about why. The API
+      # requires the account PASSWORD, with 2FA disabled, because the token
+      # cannot be exchanged for the session token that endpoint wants.
+      #
+      # Putting an account password in a CI secret and turning off 2FA to
+      # automate a listing page is a worse trade than editing that page by
+      # hand, so the description is set once in the Docker Hub UI:
+      #   hub.docker.com -> the repository -> Edit description
+      #
+      # https://github.com/docker/hub-feedback/issues/1927
