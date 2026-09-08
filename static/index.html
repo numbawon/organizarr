@@ -84,7 +84,14 @@
   .dot.unknown { background:var(--soft); color:var(--soft); }
   .status-bar { display:flex; align-items:center; justify-content:space-between;
                 gap:12px; margin:0 0 10px; flex-wrap:wrap; }
-  .status-bar .hint { font-size:12px; color:var(--soft); }
+  .hint { font-size:12px; color:var(--soft); }
+  /* Row of actions under a table: buttons and their modifier checkbox on
+     one line, so the checkbox reads as belonging to the button beside it
+     rather than floating under the table. */
+  #cp-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+                margin-top:10px; }
+  #cp-actions label { font-size:12px; color:var(--soft); display:flex;
+                      align-items:center; gap:6px; cursor:pointer; margin:0; }
   .status-bar label { font-size:12px; color:var(--soft); display:flex;
                       align-items:center; gap:6px; cursor:pointer; }
 
@@ -186,6 +193,34 @@
       <fieldset>
         <legend>qBittorrent connection</legend>
         <div id="ll-qbittorrent"></div>
+      </fieldset>
+    </div>
+  </details>
+
+  <details id="cleanuparr-section">
+    <summary>Cleanuparr</summary>
+    <div class="body">
+      <fieldset>
+        <legend>*arr connections</legend>
+        <p class="hint">
+          Cleanuparr needs each *arr's URL and API key to act on its queue.
+          Organizarr already has both, so it can write them in rather than
+          leaving it as copy-paste.
+        </p>
+        <div id="cp-arr"></div>
+        <div id="cp-actions">
+          <button id="cp-check" class="secondary">Check</button>
+          <button id="cp-sync">Sync</button>
+          <label id="cp-rewrite-wrap">
+            <input type="checkbox" id="cp-rewrite">
+            also rewrite existing keys
+          </label>
+        </div>
+        <p class="hint">
+          Cleanuparr masks stored keys on read, so whether an existing entry
+          still holds the right key cannot be checked from here. Sync leaves
+          working entries alone; tick the box after rotating an *arr's key.
+        </p>
       </fieldset>
     </div>
   </details>
@@ -703,6 +738,89 @@ function loadLazyLibrarian() {
   loadKeyValueApp("lazylibrarian", "#lazylibrarian-section", "/api/lazylibrarian/settings", LAZYLIBRARIAN_SECTIONS, "ll-general");
 }
 
+// ---- Cleanuparr: wire the *arr apps into it -----------------------------
+// The keys themselves never come down here -- the API reports what would
+// change, not what anything is set to. See /api/cleanuparr/arr.
+const CP_LABEL = {
+  none: "configured",
+  create: "will be added",
+  enable: "disabled, will be re-enabled",
+  update: "key will be rewritten",
+  skip: "skipped",
+  unsupported: "not supported by this Cleanuparr version",
+  error: "error",
+};
+
+function renderCleanuparrRows(apps, wrap) {
+  wrap.textContent = "";
+  const table = el("table");
+  const tbody = el("tbody");
+  apps.forEach(a => {
+    const tr = el("tr");
+    tr.appendChild(el("td", {text: a.app}));
+    tr.appendChild(el("td", {text: CP_LABEL[a.action] || a.action}));
+    // Only say something about the key when there is something true to say.
+    const note = a.reason
+      ? a.reason
+      : a.key_verifiable === false
+        ? "key present, cannot be verified"
+        : a.url || "";
+    tr.appendChild(el("td", {text: note}));
+    tbody.appendChild(tr);
+    if (a.other_instances?.length) {
+      const extra = el("tr");
+      extra.appendChild(el("td", {text: ""}));
+      extra.appendChild(el("td", {colspan: "2",
+        text: `other entries left alone: ${a.other_instances.join(", ")}`}));
+      tbody.appendChild(extra);
+    }
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+}
+
+async function loadCleanuparr() {
+  const wrap = $("#cp-arr");
+  const actions = $("#cp-actions");
+  const refresh = async () => {
+    try {
+      const d = await api("/api/cleanuparr/arr");
+      renderCleanuparrRows(d.apps, wrap);
+      return d.apps;
+    } catch (e) {
+      wrap.textContent = "";
+      wrap.appendChild(el("div", {class:"msg err", text: e.message}));
+      return null;
+    }
+  };
+  await refresh();
+
+  $("#cp-check").onclick = async () => {
+    await refresh();
+    msg(actions, "Checked.", true);
+  };
+
+  $("#cp-sync").onclick = async () => {
+    const rewrite = $("#cp-rewrite").checked;
+    try {
+      const d = await api(
+        `/api/cleanuparr/arr/sync${rewrite ? "?rewrite_keys=true" : ""}`,
+        {method: "POST"}
+      );
+      const failed = d.results.filter(r => !r.ok);
+      await refresh();
+      if (failed.length) {
+        msg(actions, failed.map(f => `${f.app}: ${f.reason || "failed"}`).join("; "), false);
+      } else {
+        const changed = d.results.filter(r => r.action !== "none" && r.action !== "skip");
+        msg(actions, changed.length
+          ? `Synced ${changed.map(c => c.app).join(", ")}.`
+          : "Already up to date.", true);
+      }
+    } catch (e) { msg(actions, e.message, false); }
+  };
+}
+
 async function init() {
   const apps = await api("/api/status");
 
@@ -731,6 +849,7 @@ async function init() {
   if (byKind.prowlarr?.length) loadProwlarr(); else hideSection("prowlarr-section");
   if (byKind.bazarr?.length) loadBazarr(); else hideSection("bazarr-section");
   if (byKind.lazylibrarian?.length) loadLazyLibrarian(); else hideSection("lazylibrarian-section");
+  if (byKind.cleanuparr?.length) loadCleanuparr(); else hideSection("cleanuparr-section");
 }
 
 init();
