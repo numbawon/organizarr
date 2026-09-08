@@ -211,8 +211,25 @@ def _get_api_key(name: str) -> str | None:
     # on its own, whenever the app in question actually finishes booting
     # -- no restart, no one watching required.
     cfg = APPS[name]
-    if not cfg.get("api_key"):
-        cfg["api_key"] = _read_api_key(cfg.get("config"))
+    # Cache, but invalidate on the config file's mtime rather than only on
+    # a miss. Caching until the key is falsy is self-healing for an app
+    # that has not booted yet, and WRONG for a rotated key: the stale copy
+    # gets compared against a consumer's equally stale copy, both agree,
+    # and the connections view reports a broken link as fine. Observed
+    # exactly that after rotating Sonarr's key. A stat per call is cheap
+    # next to the HTTP calls these routes already make.
+    path = cfg.get("config")
+    stamp = None
+    if path:
+        try:
+            stamp = Path(path).stat().st_mtime_ns
+        except OSError:
+            stamp = None
+    if not cfg.get("api_key") or cfg.get("api_key_stamp") != stamp:
+        fresh = _read_api_key(path)
+        if fresh:
+            cfg["api_key"] = fresh
+            cfg["api_key_stamp"] = stamp
     if cfg.get("api_key"):
         return cfg["api_key"]
     # Auto-detection has nothing (yet). Fall back to a manually-entered

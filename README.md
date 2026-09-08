@@ -1,16 +1,23 @@
 # Organizarr
 
-One place for the `*arr` settings that are actually annoying to keep
-consistent by hand: authentication method, download-client host/port,
-and Prowlarr's application/indexer sync. Not a clone of every app's
-full settings UI -- just the fields worth centralizing, edited through
-each app's own real API, never by touching a config file directly.
+A small config hub for the *arr apps. Not a clone of every app's settings
+UI: it covers the fields that are genuinely annoying to keep straight by
+hand, and the connections between apps that break quietly.
 
-Supports Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, and LazyLibrarian.
-Every app is optional -- turn one on by setting its `_URL` env var, skip
-the rest.
+Covers Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, LazyLibrarian, Cleanuparr
+and Seerr. Every app is optional and enabled purely by environment
+variable, so it fits a stack that runs some of them rather than all.
 
-![Organizarr's status grid and Sonarr's settings expanded, live data from a real deployment](docs/screenshot.png)
+Two things it does that the apps cannot do for themselves:
+
+- **Reads each app's API key from its own config**, in whatever format that
+  app happens to use: XML, YAML, INI, JSON or SQLite. Keys never reach the
+  browser.
+- **Checks the links between apps.** Cleanuparr, Seerr, Prowlarr and Bazarr
+  all need another app's URL and API key, and a wrong one fails silently:
+  nothing announces the break, results just stop appearing. Organizarr is
+  the only component holding all of them, so it can both report and repair
+  those links.
 
 ## Why
 

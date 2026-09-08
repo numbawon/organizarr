@@ -65,3 +65,21 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
+
+      # Docker Hub shows nothing on the listing page unless it is pushed
+      # there separately -- the image had 520 pulls against an empty
+      # overview. Sync it from the README so it cannot drift, rather than
+      # pasting it once by hand.
+      #
+      # Only on the default branch: a tag build would otherwise rewrite the
+      # overview from whatever that tag's README said. Skipped entirely
+      # when Docker Hub is not configured, same as the push above.
+      - name: Sync Docker Hub description
+        if: github.ref == 'refs/heads/main' && vars.DOCKERHUB_USERNAME != ''
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_USERNAME }}/organizarr
+          short-description: ${{ github.event.repository.description }}
+          readme-filepath: ./README.md
