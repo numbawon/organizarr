@@ -194,15 +194,34 @@ def _read_api_key(path: str | None) -> str | None:
                 continue
         return None
     if p.suffix == ".ini":
+        # Mylar3 ships `api_key = None` -- the literal four-character
+        # string, not an empty value -- until someone generates one in its
+        # UI. Returned as-is that reads as a perfectly good key, so the
+        # status line said a key was found while every call using it came
+        # back "Incorrect API key". A placeholder is the absence of a key
+        # and has to be reported as one.
+        def _real(v: str | None) -> str | None:
+            v = (v or "").strip()
+            return None if v.lower() in ("", "none", "null") else v
+
         cp = configparser.ConfigParser()
-        cp.read(p)
-        for section in cp.sections():
+        # configparser raises on a file whose first setting sits above any
+        # [section] header, which is exactly the shape the fallback below
+        # was written for -- so without this the fallback was unreachable
+        # and a headerless config read as "no key found" instead.
+        try:
+            cp.read(p)
+        except configparser.Error:
+            cp = None
+        for section in (cp.sections() if cp else []):
             if cp.has_option(section, "api_key"):
-                return cp.get(section, "api_key")
+                key = _real(cp.get(section, "api_key"))
+                if key:
+                    return key
         # LazyLibrarian's config.ini has no [section] header on some keys
         text = p.read_text()
         m = re.search(r"^api_key\s*=\s*(\S+)", text, re.MULTILINE)
-        return m.group(1) if m else None
+        return _real(m.group(1)) if m else None
     return None
 
 
