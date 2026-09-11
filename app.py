@@ -72,6 +72,13 @@ _APP_SPECS = [
     ("prowlarr", "prowlarr", "v1"),
     ("bazarr", "bazarr", None),
     ("lazylibrarian", "lazylibrarian", None),
+    # Mylar3 is the comics *arr, but it is not servarr-shaped: its API is
+    # the older /api?apikey=&cmd= style it inherited from Mylar, and it
+    # has no readCFG/writeCFG pair the way LazyLibrarian does. So there is
+    # nothing to hang a settings editor on, and this is reachability and
+    # version only. Its key lives in config.ini under [API], which the
+    # existing ini reader already finds without a special case.
+    ("mylar3", "mylar3", None),
     # Seerr holds Sonarr/Radarr connections of its own, so it is a
     # connection consumer like Cleanuparr rather than a settings provider.
     ("seerr", "seerr", None),
@@ -447,6 +454,23 @@ async def status():
                     r.raise_for_status()
                     entry["reachable"] = True
                     entry["version"] = r.json().get("data", {}).get("bazarr_version")
+            elif cfg["kind"] == "mylar3":
+                async with httpx.AsyncClient(base_url=cfg["base"], timeout=15) as c:
+                    r = await c.get("/api", params={"apikey": key, "cmd": "getVersion"})
+                    r.raise_for_status()
+                    data = r.json()
+                    # {"success": true, "data": {...}}. A wrong key still
+                    # returns HTTP 200 here, so the success flag is the
+                    # only thing that actually distinguishes authenticated
+                    # from rejected -- raise_for_status alone would call a
+                    # refused key "reachable".
+                    entry["reachable"] = bool(data.get("success"))
+                    if not entry["reachable"]:
+                        entry["error"] = (
+                            "mylar3 refused the API key, or its API is off "
+                            "(Settings -> Web Interface -> Enable API)"
+                        )
+                    entry["version"] = (data.get("data") or {}).get("current_version")
             elif cfg["kind"] == "lazylibrarian":
                 async with httpx.AsyncClient(base_url=cfg["base"], timeout=15) as c:
                     r = await c.get("/api", params={"apikey": key, "cmd": "getVersion"})
